@@ -461,9 +461,11 @@
         <a href="#security">§5 Security model</a> and <a href="#gpu-compose">§7 Docker Compose</a> for mutual TLS,
         and the design-constraints table just below for the <code>/speak</code>/OpenAI-TTS removal (unrelated to,
         and unaffected by, the later OpenAI API migration described above — <code>/speak</code> remains removed;
-        transcription/translation now use OpenAI for a different reason). Production performance and full
-        end-to-end QA against the real OpenAI API are still pending in this environment — reported honestly as
-        pending in <a href="#appendix">§12</a>, not claimed as done.</p>
+        transcription/translation now use OpenAI for a different reason). The native (non-Docker) run path has
+        since been exercised end-to-end against the real OpenAI API in this environment — structurally verified,
+        blocked only by the test account's OpenAI billing/credits, not by code or config. Docker Compose deployment
+        and a fully successful transcript/translation are still pending — see the honest, itemized breakdown in
+        <a href="#appendix">§12</a>.</p>
       </div>
       <div class="callout" style="margin-top:8px">
         <p><strong>Platform expansion:</strong> a broader "Audio Transcription &amp; Translation Platform" requirements
@@ -472,6 +474,22 @@
         a prior decision in this document, and was confirmed explicitly rather than assumed: recordings and their
         transcripts/translations are now <strong>kept permanently</strong> (not deleted after the request — see
         <a href="#history">§8a</a> for the full detail).</p>
+      </div>
+      <div class="callout" style="margin-top:8px">
+        <p><strong>Bug fix (client-disconnect cancellation):</strong> <code>lib/serviceClient.js</code>'s
+        cancel-on-disconnect logic previously listened on <code>req.on("close", ...)</code> — the
+        <code>http.IncomingMessage</code>'s own <code>close</code> event, which fires as soon as the request body has
+        been fully read/destroyed (which <code>multer</code>/<code>express.json()</code> already does before the
+        route handler even runs), not when the underlying TCP connection actually drops. In practice this meant
+        essentially every transcribe/translate request aborted its own call to the internal AI service almost
+        immediately, regardless of whether the browser client was still connected, surfacing as
+        <code>{"error":"Request cancelled"}</code> (HTTP 499) on requests that should have succeeded. Verified with a
+        minimal Express + multer repro: the listener fired ~1ms in, while the real client connection stayed open and
+        received its response 1.5s later. Fixed by switching to <code>req.socket.on("close", ...)</code>, which only
+        fires on a genuine connection close — confirmed with the same repro that a normal completed request never
+        triggers it, and a real client-side abort does, at the correct timing. Predates, and is unrelated to, the
+        OpenAI API migration described above — it was a bug in the gateway's disconnect-detection logic regardless
+        of backend.</p>
       </div>
     </header>
 
@@ -981,26 +999,77 @@ docker compose ps       <span class="c"># all three services should show "health
       </ol>
 
       <h3 id="gpu-native">Path B — Native / bare-metal (no Docker)</h3>
-      <p>Useful while iterating on the Python services directly — any machine works, GPU or not.</p>
+      <p>Useful while iterating on the Python services directly — any machine works, GPU or not. This path was
+      actually exercised end-to-end in this environment (gateway + both AI services as real local processes, real
+      <code>OPENAI_API_KEY</code>) — see the callout in the appendix.</p>
       <div class="scroller">
         <pre><code><span class="c"># 1) Gateway</span>
 cd server
 npm install
-npm start                                     <span class="c"># :3000</span>
-
-<span class="c"># 2) Transcription service (separate shell)</span>
+npm start                                     <span class="c"># :3000 — .env is auto-loaded here via dotenv</span></code></pre>
+      </div>
+      <div class="callout">
+        <p><strong><code>.env</code> only auto-loads into the Node gateway.</strong> It lives at the
+        <code>server/</code> root and is read there via the <code>dotenv</code> package in <code>serve.js</code>.
+        The two Python services read their config with plain <code>os.environ.get(...)</code>
+        (<code>ai-services/*/config.py</code>) — there is no python-dotenv anywhere in this codebase, so simply
+        <code>cd</code>-ing into <code>ai-services/transcription</code> and running <code>uvicorn app:app</code>
+        will <strong>not</strong> pick up <code>OPENAI_API_KEY</code>/<code>SERVICE_PORT</code>/etc. from
+        <code>server/.env</code> — confirmed directly in this environment: without loading those variables into the
+        shell first, <code>OPENAI_API_KEY</code> stayed unset in the Python process and <code>/ready</code> stayed
+        unhealthy. Load the env vars into each shell explicitly before starting <code>uvicorn</code>:</p>
+      </div>
+      <p><strong>bash/zsh (Linux/Mac/WSL/Git Bash):</strong></p>
+      <div class="scroller">
+        <pre><code><span class="c"># 2) Transcription service (separate shell)</span>
 cd server/ai-services/transcription
 python -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install -r requirements.txt               <span class="c"># just fastapi/uvicorn/openai — no torch, no GPU wheel</span>
-uvicorn app:app --host 0.0.0.0 --port 8001
+set -a; source ../../.env; set +a             <span class="c"># load OPENAI_API_KEY etc. into THIS shell</span>
+SERVICE_PORT=8001 uvicorn app:app --host 0.0.0.0 --port 8001
 
 <span class="c"># 3) Translation service (separate shell)</span>
 cd server/ai-services/translation
 python -m venv .venv &amp;&amp; source .venv/bin/activate
 pip install -r requirements.txt               <span class="c"># fastapi/uvicorn/openai/tiktoken — no torch, no GPU wheel</span>
+set -a; source ../../.env; set +a
+SERVICE_PORT=8002 uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
+      </div>
+      <p><strong>PowerShell (Windows):</strong></p>
+      <div class="scroller">
+        <pre><code><span class="c"># 2) Transcription service (separate shell)</span>
+cd server\ai-services\transcription
+python -m venv .venv; .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Get-Content ..\..\.env | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+    $name, $value = $_ -split '=', 2
+    [System.Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+}
+$env:SERVICE_PORT = '8001'
+uvicorn app:app --host 0.0.0.0 --port 8001
+
+<span class="c"># 3) Translation service (separate shell)</span>
+cd server\ai-services\translation
+python -m venv .venv; .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Get-Content ..\..\.env | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+    $name, $value = $_ -split '=', 2
+    [System.Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+}
+$env:SERVICE_PORT = '8002'
 uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
       </div>
-      <p>Set <code>TRANSCRIPTION_SERVICE_URL=http://localhost:8001</code> and <code>TRANSLATION_SERVICE_URL=http://localhost:8002</code> in the gateway's <code>.env</code> (these are already the defaults). Set <code>OPENAI_API_KEY</code> for both AI service processes.</p>
+      <p><code>SERVICE_PORT</code> is set explicitly on top of whatever <code>.env</code> already loaded (it
+      defaults to <code>8001</code> there — see <code>.env.example</code> — which is why the translation service
+      needs the override), the same reason Docker Compose overrides it per-service instead of relying on the shared
+      <code>.env</code> file alone (§8). <code>uvicorn</code>'s <code>--app-dir</code> flag is a lighter alternative
+      to the <code>cd</code>/venv-per-service dance if you'd rather run from fewer shells — it only changes where
+      <code>app.py</code> is found, <strong>not</strong> env loading, so the env vars above still need to be set in
+      that shell's process environment either way:
+      <code>uvicorn app:app --app-dir ai-services/transcription --host 0.0.0.0 --port 8001</code>.</p>
+      <p>Set <code>TRANSCRIPTION_SERVICE_URL=http://localhost:8001</code> and <code>TRANSLATION_SERVICE_URL=http://localhost:8002</code> in the gateway's <code>.env</code> (these are already the defaults).</p>
 
       <h3 id="gpu-verify">Verifying the OpenAI API is actually being used</h3>
       <table>
@@ -1212,15 +1281,17 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         <li>Alert on disk usage for the <code>gateway-data</code>/<code>gateway-recordings</code> volumes — with <code>RECORDINGS_RETENTION_DAYS=0</code> (the default) they grow unbounded</li>
       </ul>
 
-      <h3 class="sub">Known gaps — honestly unverified in this environment</h3>
+      <h3 class="sub">Known gaps — honestly reported in this environment</h3>
       <ul>
         <li>No per-user authentication/ownership on recording history yet — anyone with API access sees all recordings; add auth before a multi-tenant deployment</li>
         <li><code>better-sqlite3</code>/ffmpeg compatibility with the Alpine (musl) gateway image was verified by reading the packages' prebuilt-binary source logic, not by actually running <code>docker build</code> — Docker Desktop's daemon was unavailable in this sandbox</li>
         <li>Retention pruning (<code>RECORDINGS_RETENTION_DAYS</code>) is unit-tested but not exercised against real aged production data</li>
-        <li>Not verified end-to-end against the real OpenAI API in this environment — no live <code>OPENAI_API_KEY</code> was exercised here; see the test report for exactly what was and wasn't run</li>
+        <li><strong>Structurally verified end-to-end, blocked only by account billing — not by code or config.</strong> The native (non-Docker) gateway, transcription service, and translation service were all run as real local processes with a real (user-provided) <code>OPENAI_API_KEY</code>. Both AI services' <code>/health</code>/<code>/ready</code> and the gateway's own <code>/api/v1/ready</code> confirmed healthy OpenAI-client initialization and reachability. A real transcription request was sent through the full pipeline (browser → gateway → transcription service → OpenAI's audio API) and reached OpenAI successfully; OpenAI itself rejected it with <code>RateLimitError</code> / <code>insufficient_quota</code> ("You have no credits remaining...") — reproduced identically by calling OpenAI's API directly with the same key, outside this application. That confirms the integration itself (gateway routing, service-to-service auth, OpenAI SDK usage, request formatting) is correct; the only remaining blocker is that this particular OpenAI account has no billing/credits, an account-level issue outside this codebase.</li>
+        <li><strong>Still not verified in this environment:</strong> an actual successful transcript/translation (correct content returned, not just a request that correctly reaches OpenAI and gets a real OpenAI-side response) — pending a funded <code>OPENAI_API_KEY</code>.</li>
+        <li><strong>Docker Compose was not exercised at all</strong> in this environment — Docker/Docker Compose is not installed here, so that deployment path (§7 Path A) is unverified, separately from the native path above (§7 Path B), which <em>was</em> exercised end-to-end.</li>
       </ul>
 
-      <h3 class="sub">Performance, cost &amp; rate limits (not yet measured — no live OpenAI API access in this environment)</h3>
+      <h3 class="sub">Performance, cost &amp; rate limits (not yet measured — request reached OpenAI but was billing-rejected before returning a result, see above)</h3>
       <div class="scroller">
         <table>
           <thead><tr><th>Scenario</th><th>Target</th></tr></thead>

@@ -32,7 +32,7 @@ after this revision:
 | Encrypted communication - **Not met** | **Resolved.** Gateway↔AI-service traffic is now mutual TLS by default in Docker Compose (§1, §1.1). Public browser↔gateway traffic is HTTPS via the optional reverse-proxy profile (Caddy, automatic Let's Encrypt) - §5. |
 | Existing `/speak` route conflicted with "no OpenAI/no external AI providers" | **Resolved at the time.** `/speak`, the OpenAI TTS integration, `google-tts-api`, and `OPENAI_API_KEY` were removed entirely, and the application made zero calls to any third-party AI or inference API, for any feature. **Superseded since:** a later, deliberate architecture change reintroduced `OPENAI_API_KEY` and now routes transcription and translation themselves through the OpenAI API - see the architecture note above and §2. The "no external AI provider" constraint from the original SOW no longer holds; it was explicitly relaxed by the project owner in favor of using OpenAI's hosted models instead of self-hosting. |
 | Performance not verified on the production GPU | **No longer applicable.** There is no production GPU to verify - transcription and translation now run as OpenAI API calls. §6 now documents latency/cost/rate-limit targets for the API-based design instead. |
-| End-to-end QA / production deployment pending | **Unchanged in spirit, different reason.** No GPU hardware is needed anymore, but end-to-end QA against the real OpenAI API and a real deployment target is still pending in this environment. See §7 Known limitations. |
+| End-to-end QA / production deployment pending | **Partially addressed.** The native (non-Docker) run path (§5) has since been exercised end-to-end against the real OpenAI API in this environment - gateway, transcription service, and translation service all running as real local processes with a real `OPENAI_API_KEY`, and a real transcription request that reached OpenAI successfully. That run was rejected by OpenAI for the test account's own lack of billing/credits, not by anything in this codebase - see §7 for the precise breakdown. Docker Compose deployment is still entirely unexercised (no Docker daemon in this environment), and a fully successful transcript/translation is still unconfirmed. |
 
 Secure API authentication (bearer token, §1) was already met and is
 unchanged. The "self-hosted/private model" requirement from the original SOW
@@ -433,18 +433,78 @@ cp .env.example .env    # edit INTERNAL_SERVICE_TOKEN and OPENAI_API_KEY
 
 # Terminal 1: gateway
 npm start                # or: node serve.js
+```
 
+**`.env` only auto-loads into the Node gateway.** `.env` lives at the
+`server/` root and is read there via the `dotenv` package in `serve.js`. The
+two Python services read their config with plain `os.environ.get(...)`
+(`ai-services/*/config.py`) - there is no python-dotenv anywhere in this
+codebase, so simply `cd`-ing into `ai-services/transcription` and running
+`uvicorn app:app` will **not** pick up `OPENAI_API_KEY`/`SERVICE_PORT`/etc.
+from `server/.env`. This was confirmed directly: without explicitly loading
+those variables into the shell first, `OPENAI_API_KEY` was unset in the
+Python process and `/ready` stayed unhealthy. Each Python service's
+environment variables must be loaded into that shell explicitly before
+starting `uvicorn`:
+
+**PowerShell:**
+
+```powershell
 # Terminal 2: transcription service
-cd ai-services/transcription
-python -m venv .venv && .venv/Scripts/activate   # or source .venv/bin/activate on Linux/Mac
+cd ai-services\transcription
+python -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Get-Content ..\..\.env | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+    $name, $value = $_ -split '=', 2
+    [System.Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+}
+$env:SERVICE_PORT = '8001'
 uvicorn app:app --host 0.0.0.0 --port 8001
 
 # Terminal 3: translation service
-cd ai-services/translation
-python -m venv .venv && .venv/Scripts/activate
+cd ai-services\translation
+python -m venv .venv; .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Get-Content ..\..\.env | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+    $name, $value = $_ -split '=', 2
+    [System.Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+}
+$env:SERVICE_PORT = '8002'
 uvicorn app:app --host 0.0.0.0 --port 8002
+```
+
+**bash/zsh (Linux/Mac/WSL/Git Bash):**
+
+```bash
+# Terminal 2: transcription service
+cd ai-services/transcription
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+set -a; source ../../.env; set +a
+SERVICE_PORT=8001 uvicorn app:app --host 0.0.0.0 --port 8001
+
+# Terminal 3: translation service
+cd ai-services/translation
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+set -a; source ../../.env; set +a
+SERVICE_PORT=8002 uvicorn app:app --host 0.0.0.0 --port 8002
+```
+
+`SERVICE_PORT` is set explicitly on top of whatever `.env` has (it defaults
+to `8001` there - see `.env.example` - which is why the translation service
+needs the override) for the same reason Docker Compose overrides it
+per-service instead of relying on the shared `.env` file alone (§4).
+
+`uvicorn`'s `--app-dir` flag is a lighter alternative to the `cd`/venv-per-
+service dance if you'd rather run both services from fewer shells - it only
+changes where `app.py` is found, **not** env loading, so the env vars above
+still need to be set in that shell's process environment either way:
+
+```bash
+uvicorn app:app --app-dir ai-services/transcription --host 0.0.0.0 --port 8001
 ```
 
 Open `http://localhost:3000`. `INTERNAL_TLS_ENABLED`/`TLS_ENABLED` default to
@@ -453,6 +513,10 @@ GPU, and no `torch`/CUDA wheel install, is needed anymore - both services'
 `requirements.txt` only pull in the `openai` SDK (and `tiktoken` for the
 translation service's token counting) alongside the existing FastAPI/uvicorn
 stack.
+
+This full native path (gateway + both AI services, real `OPENAI_API_KEY`)
+was exercised end-to-end in this environment - see §7 for exactly what that
+verified and what it didn't.
 
 ### Production (Docker Compose)
 
@@ -513,10 +577,15 @@ back the rest:
 
 These targets are no longer about GPU capacity planning - both AI services
 now call the OpenAI API, so the operative concerns are latency, per-request
-cost, and OpenAI's own rate limits, not local hardware sizing. Not yet
-measured against the real OpenAI API in this environment (no live
-`OPENAI_API_KEY` exercised here - see §7). Documented here as the targets to
-benchmark once deployed:
+cost, and OpenAI's own rate limits, not local hardware sizing. The full
+pipeline was exercised end-to-end in this environment with a real
+`OPENAI_API_KEY` (gateway -> transcription service -> OpenAI's audio API),
+confirming request routing, service-to-service auth, and OpenAI SDK usage
+are all correct (§7); that run's own OpenAI request was rejected for
+insufficient account credits before returning a transcript, so these
+latency/throughput targets are still not measured against a successful real
+response. Documented here as the targets to benchmark once a funded
+`OPENAI_API_KEY` is available:
 
 | Scenario | Target |
 |---|---|
@@ -546,10 +615,32 @@ instrumentation work.
 
 ## 7. Known limitations
 
-- Not verified end-to-end against the real OpenAI API in this environment
-  (no live `OPENAI_API_KEY` was exercised here) - see the test report for
-  exactly what was and wasn't run. Performance targets (§6) are therefore
-  targets, not measured results.
+- **Structurally verified end-to-end against the real OpenAI API in this
+  environment, blocked only by account billing - not by code or config.**
+  The native (non-Docker, §5) gateway, transcription service, and
+  translation service were all run as real local processes with a real
+  (user-provided) `OPENAI_API_KEY`. Both AI services' `/health`/`/ready` and
+  the gateway's own `/api/v1/ready` confirmed healthy OpenAI-client
+  initialization and reachability. A real transcription request was sent
+  through the full pipeline (browser -> gateway -> transcription service ->
+  OpenAI's audio API) and reached OpenAI successfully; OpenAI itself
+  rejected it with `RateLimitError` / `insufficient_quota` ("You have no
+  credits remaining...") - reproduced identically by calling OpenAI's API
+  directly with the same key, outside this application. That confirms the
+  integration itself (gateway routing, service-to-service auth, OpenAI SDK
+  usage, request formatting) is correct; the only remaining blocker is that
+  this particular OpenAI account has no billing/credits, an account-level
+  issue outside this codebase.
+- **Still not verified in this environment:** an actual successful
+  transcript/translation (correct content returned, not just a request that
+  correctly reaches OpenAI and gets a real OpenAI-side response) - pending a
+  funded `OPENAI_API_KEY`. Performance targets (§6) remain unmeasured for
+  the same reason.
+- **Docker Compose was not exercised at all** in this environment - Docker/
+  Docker Compose is not installed here, so that deployment path (§5
+  Production) is unverified. This is separate from, and shouldn't be
+  conflated with, the native path above, which *was* exercised end-to-end.
+  See also the Alpine/musl `docker build` caveat further down this list.
 - This application now depends on `api.openai.com` being reachable and
   responsive for every single transcribe/translate request - there is no
   offline or degraded-local-model fallback. An OpenAI outage, rate-limit
@@ -698,6 +789,25 @@ specifically) that the model translated the sentence rather than obeying it.
 
 **Modified (most recent revision - OpenAI API migration, self-hosted models
 removed):**
+- `lib/serviceClient.js` - **bug fix, unrelated to the OpenAI migration
+  itself:** `callService()`'s cancel-on-disconnect logic previously listened
+  on `req.on("close", ...)` - the `http.IncomingMessage`'s own `close`
+  event, which fires as soon as the request body has been fully
+  read/destroyed (which `multer`/`express.json()` already does *before* the
+  route handler even runs), not when the underlying TCP connection actually
+  drops. In practice this meant essentially every transcribe/translate
+  request aborted its own call to the internal AI service almost
+  immediately, regardless of whether the browser client was still
+  connected, surfacing as `{"error":"Request cancelled"}` (HTTP 499) on
+  requests that should have succeeded. Verified with a minimal Express +
+  multer repro: attaching the listener inside the route handler fired it
+  ~1ms in, while the real client connection stayed open and received its
+  response 1.5s later. Fixed by switching to `req.socket.on("close", ...)` /
+  `req.socket.removeListener(...)`, which only fires on a genuine connection
+  close - confirmed with the same repro that a normal completed request
+  never triggers it, and a real client-side abort does, at the correct
+  timing. This bug predates the OpenAI migration and existed in the
+  gateway's disconnect-detection logic regardless of backend.
 - `ai-services/transcription/model_backend.py` - no longer loads
   `faster-whisper` locally; now a thin wrapper around OpenAI's audio
   transcription API (`whisper-1`).

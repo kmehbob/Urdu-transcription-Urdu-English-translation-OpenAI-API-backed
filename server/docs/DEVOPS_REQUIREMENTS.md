@@ -45,7 +45,12 @@ transcribe/translate request.
 - If running the gateway natively instead of in Docker: **Node.js 20**
   (matches the `node:20-alpine` base image) and `npm`.
 - If running either Python service natively: **Python 3.12+** (matches the
-  `python:3.12-slim` base image).
+  `python:3.12-slim` base image). Note that `.env` only auto-loads into the
+  Node gateway (via `dotenv` in `serve.js`) — the Python services read
+  `os.environ.get(...)` directly with no python-dotenv anywhere in this
+  codebase, so each service's env vars must be loaded into its own shell
+  explicitly before starting `uvicorn`. See `docs/AI_FEATURE.md` §5 for the
+  exact PowerShell/bash steps (confirmed working in this environment).
 
 ## 2. Cost, latency, and rate limits (replaces GPU sizing)
 
@@ -65,10 +70,17 @@ longer applies. What DevOps should plan for instead:
   `ai_service_error` in gateway logs (§12).
 - **Latency**: now dominated by OpenAI API round-trip time plus network
   egress, not local inference. Full rationale and benchmarking targets:
-  `docs/AI_FEATURE.md` §6. Neither service has been benchmarked against the
-  real OpenAI API in this environment — treat `docs/AI_FEATURE.md` §6's
-  performance targets as what to validate once a real `OPENAI_API_KEY` is in
-  use, and retune the concurrency caps above accordingly.
+  `docs/AI_FEATURE.md` §6. The native (non-Docker) run path was exercised
+  end-to-end in this environment with a real `OPENAI_API_KEY` — the request
+  reached OpenAI successfully and OpenAI rejected it only for the test
+  account's own lack of billing/credits, confirming the integration itself
+  is correct — but no latency numbers were captured, since that request
+  never returned a successful result. Treat `docs/AI_FEATURE.md` §6's
+  performance targets as what to validate once a funded `OPENAI_API_KEY` is
+  in use, and retune the concurrency caps above accordingly. Docker Compose
+  itself remains entirely unexercised in this environment (no Docker daemon
+  available) — see `docs/AI_FEATURE.md` §7 for the full breakdown of what
+  was and wasn't verified.
 
 No particular cloud VM shape is required for compute reasons anymore — any
 small general-purpose instance is sufficient; size it for the gateway's own
