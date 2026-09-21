@@ -1,46 +1,55 @@
 # Translation-with-Whisper-and-LLM
 
-Private, GPU-accelerated Urdu speech transcription and Urdu-to-English translation. Record or type Urdu, transcribe it locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), edit the text, then translate it to fluent English with a self-hosted LLM (Qwen2.5-Instruct by default) — no OpenAI, Anthropic, Google, or other third-party inference API involved in either step.
+Private Urdu speech transcription and Urdu-to-English translation. Record or type Urdu, transcribe it with [OpenAI's `whisper-1`](https://platform.openai.com/docs/guides/speech-to-text) audio API, edit the text, then translate it to fluent English with the [OpenAI Chat Completions API](https://platform.openai.com/docs/guides/text-generation) (default model `gpt-4o-mini`). Both AI services are thin wrappers around the OpenAI API — no local/self-hosted model, and no GPU required anywhere in the stack.
 
 All application code lives in [`server/`](server/).
 
-## Quick start (local, CPU or small GPU)
+## Quick start (local, no Docker, no GPU)
 
 ```bash
 cd server
 npm install
-cp .env.example .env    # set INTERNAL_SERVICE_TOKEN
+cp .env.example .env    # set INTERNAL_SERVICE_TOKEN and a real OPENAI_API_KEY
 
 # gateway
 npm start                # http://localhost:3000
+```
 
+`.env` only auto-loads into the Node gateway above — the two Python services read env vars directly from their own process environment (no python-dotenv), so load `.env` into each shell before starting `uvicorn`:
+
+```bash
 # transcription service (separate shell)
 cd ai-services/transcription
 pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8001
+set -a; source ../../.env; set +a   # PowerShell: see server/docs/AI_FEATURE.md §5
+SERVICE_PORT=8001 uvicorn app:app --host 0.0.0.0 --port 8001
 
 # translation service (separate shell)
 cd ai-services/translation
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8002
+set -a; source ../../.env; set +a
+SERVICE_PORT=8002 uvicorn app:app --host 0.0.0.0 --port 8002
 ```
 
-## Production (Docker Compose + GPU)
+See [`server/docs/AI_FEATURE.md`](server/docs/AI_FEATURE.md) §5 for the equivalent PowerShell commands.
+
+## Production (Docker Compose)
 
 ```bash
 cd server
-cp .env.example .env
+cp .env.example .env    # set INTERNAL_SERVICE_TOKEN and a real OPENAI_API_KEY
+./scripts/generate-internal-certs.sh
 docker compose build
 docker compose up -d
 curl http://localhost:3000/api/v1/ready
 ```
 
-Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the GPU host.
+No GPU or NVIDIA Container Toolkit needed — both AI services run on plain `python:3.12-slim` images and call `api.openai.com` over the network.
 
 ## Documentation
 
-- [`server/docs/AI_FEATURE.md`](server/docs/AI_FEATURE.md) — architecture, model selection rationale, VRAM tiers, env var reference, privacy/data lifecycle, rollback, monitoring, QA checklist.
+- [`server/docs/AI_FEATURE.md`](server/docs/AI_FEATURE.md) — architecture, OpenAI model configuration, env var reference, privacy/data lifecycle, rollback, monitoring, QA checklist.
+- [`server/docs/DEVOPS_REQUIREMENTS.md`](server/docs/DEVOPS_REQUIREMENTS.md) — deployment/configuration checklist for provisioning a real environment.
 - [`server/docs/urdu-voice-pipeline.html`](server/docs/urdu-voice-pipeline.html) — the same material as a standalone, diagram-illustrated visual reference (open directly in a browser).
 
 ## Testing
@@ -50,10 +59,10 @@ cd server
 npm test                                                       # Node unit tests
 
 cd ai-services/transcription
-pip install -r requirements-dev.txt && pytest                  # Python unit tests (heavy ML deps not required)
+pip install -r requirements-dev.txt && pytest                  # Python unit tests (no OpenAI credentials needed)
 
 cd ../translation
 pip install -r requirements-dev.txt && pytest
 ```
 
-Gated integration tests that exercise the real models require `RUN_GPU_INTEGRATION_TESTS=1` and a running GPU deployment — see `npm run test:integration` and the docs above.
+Gated integration tests that call the real OpenAI API require `RUN_OPENAI_INTEGRATION_TESTS=1` and a funded `OPENAI_API_KEY` — see `npm run test:integration` and the docs above.
