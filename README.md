@@ -1,4 +1,4 @@
-# Translation-with-Whisper-and-LLM
+# Urdu Transcription & Urdu-English Translation (OpenAI API-backed)
 
 Private Urdu speech transcription and Urdu-to-English translation. Record or type Urdu, transcribe it with [OpenAI's `whisper-1`](https://platform.openai.com/docs/guides/speech-to-text) audio API, edit the text, then translate it to fluent English with the [OpenAI Chat Completions API](https://platform.openai.com/docs/guides/text-generation) (default model `gpt-4o-mini`). Both AI services are thin wrappers around the OpenAI API — no local/self-hosted model, and no GPU required anywhere in the stack.
 
