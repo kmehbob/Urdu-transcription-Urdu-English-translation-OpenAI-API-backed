@@ -1,9 +1,26 @@
-# Urdu transcription + Urdu→English translation (self-hosted)
+# Urdu transcription + Urdu→English translation (OpenAI API-backed)
 
 This document covers the new feature added on top of the existing Express
-app: local Whisper transcription and a self-hosted LLM translation service,
+app: OpenAI-API-backed Urdu transcription and English translation services,
 plus the deployment, security, privacy, and rollback details for running it
 in production.
+
+> **Architecture note (current revision):** earlier revisions of this
+> document described a fully self-hosted stack - `faster-whisper` for
+> transcription, a local `transformers`-loaded `Qwen2.5-7B-Instruct` for
+> translation, both running on a GPU you provision. That stack has been
+> **removed and replaced with calls to the OpenAI API** - `whisper-1` for
+> transcription, Chat Completions (default `gpt-4o-mini`) for translation -
+> per an explicit architecture decision by the project owner. This was a
+> deliberate simplification (no GPU host, no model downloads/caching, no
+> CUDA/torch dependency chain to maintain), not a security or compliance
+> response. See §2 for the current model/config surface and §5 for the
+> current (GPU-free) deployment story. Historical sections below that
+> describe the old "zero third-party API" stance have been corrected in
+> place; anywhere this document still discusses the earlier self-hosted
+> design as a past decision (e.g. the compliance-review history in the next
+> section), that context is kept for the record but no longer reflects the
+> current architecture.
 
 ## Compliance status (per SOW review)
 
@@ -13,21 +30,23 @@ after this revision:
 | Review finding | Resolution |
 |---|---|
 | Encrypted communication - **Not met** | **Resolved.** Gateway↔AI-service traffic is now mutual TLS by default in Docker Compose (§1, §1.1). Public browser↔gateway traffic is HTTPS via the optional reverse-proxy profile (Caddy, automatic Let's Encrypt) - §5. |
-| Existing `/speak` route conflicted with "no OpenAI/no external AI providers" | **Resolved.** `/speak`, the OpenAI TTS integration, `google-tts-api`, and `OPENAI_API_KEY` have been removed entirely. The application now makes zero calls to any third-party AI or inference API, for any feature. |
-| Performance not verified on the production GPU | **Unchanged, honestly reported.** Target SLOs are now documented (§6); actual measurement still requires the real GPU server, which is not available in this environment - not fabricated. |
-| End-to-end QA / production deployment pending | **Unchanged.** Same reason - requires real GPU hardware and a real deployment target. See §7 Known limitations. |
+| Existing `/speak` route conflicted with "no OpenAI/no external AI providers" | **Resolved at the time.** `/speak`, the OpenAI TTS integration, `google-tts-api`, and `OPENAI_API_KEY` were removed entirely, and the application made zero calls to any third-party AI or inference API, for any feature. **Superseded since:** a later, deliberate architecture change reintroduced `OPENAI_API_KEY` and now routes transcription and translation themselves through the OpenAI API - see the architecture note above and §2. The "no external AI provider" constraint from the original SOW no longer holds; it was explicitly relaxed by the project owner in favor of using OpenAI's hosted models instead of self-hosting. |
+| Performance not verified on the production GPU | **No longer applicable.** There is no production GPU to verify - transcription and translation now run as OpenAI API calls. §6 now documents latency/cost/rate-limit targets for the API-based design instead. |
+| End-to-end QA / production deployment pending | **Unchanged in spirit, different reason.** No GPU hardware is needed anymore, but end-to-end QA against the real OpenAI API and a real deployment target is still pending in this environment. See §7 Known limitations. |
 
-Secure API authentication (bearer token, §1) and the self-hosted/private
-model requirement were already met and are unchanged.
+Secure API authentication (bearer token, §1) was already met and is
+unchanged. The "self-hosted/private model" requirement from the original SOW
+was met at the time but has since been deliberately superseded (see the
+architecture note above) - inference now happens via the OpenAI API rather
+than on infrastructure you control.
 
 ### Platform expansion (recording history, multi-language, exports)
 
 A follow-up requirements document asked for persistent recording history,
 drag-and-drop upload, pause/resume + a live level meter while recording,
 arbitrary source/target language pairs, TXT/DOCX/PDF export, and
-"Save to device" - plus GPU hosting on Google Cloud. Two of those points
-directly touched decisions already made above, so they were confirmed
-explicitly rather than assumed:
+"Save to device." That directly touched a decision already made above, so
+it was confirmed explicitly rather than assumed:
 
 - **Persistent history is now a real, deliberate feature**, replacing the
   "delete everything immediately" stance from earlier in this document.
@@ -36,12 +55,6 @@ explicitly rather than assumed:
   `RECORDINGS_RETENTION_DAYS` expires them. This is a genuine privacy-policy
   reversal, done on request - see the rewritten §3 for exactly what is
   stored, for how long, and how to turn it back off.
-- **"Google Cloud GPU instances" means hosting, not an AI API.** The
-  self-hosted stack (faster-whisper + Qwen2.5-Instruct, unchanged) runs on
-  Google Cloud Compute Engine GPU VMs (A100/T4/L4) instead of on-prem
-  hardware - it does **not** mean calling Google's Speech-to-Text/Translate
-  APIs, which would reopen the exact "no external AI provider" gap closed
-  above. See §5 for GCP-specific deployment notes.
 
 ### Frontend redesign & plain MP3 conversion endpoint
 
@@ -92,9 +105,15 @@ Express gateway (serve.js)     <- rate-limited, request-ID'd,
    |  MUTUAL TLS (client cert) + Bearer INTERNAL_SERVICE_TOKEN, timeouts,
    |  concurrency caps, cancellation on client disconnect
    |
-   +--> Transcription service (Python/FastAPI + faster-whisper)  [internal network only, mTLS]
+   +--> Transcription service (Python/FastAPI, calls OpenAI's whisper-1)  [internal network only, mTLS]
+   |         |
+   |         v  HTTPS (every request)
+   |     api.openai.com
    |
-   +--> Translation service   (Python/FastAPI + transformers/Qwen2.5-Instruct) [internal network only, mTLS]
+   +--> Translation service   (Python/FastAPI, calls OpenAI Chat Completions) [internal network only, mTLS]
+             |
+             v  HTTPS (every request)
+         api.openai.com
 ```
 
 The recording history database and audio store live entirely inside the
@@ -105,18 +124,23 @@ they stay stateless request/response processors exactly as before.
 The Node gateway remains the single public entry point (unchanged pattern
 from the existing app). The two AI services are separate Python processes so
 they can be restarted/scaled independently of the gateway and of each other,
-and so the Node process never has to load any ML framework. In
+and so the Node process never has to load any AI SDK directly. In
 `docker-compose.yml` they sit on an `internal` bridge network and are not
 published to the host; only the gateway's port is exposed, and only to
 `127.0.0.1` (loopback) by default - real external traffic is expected to
 arrive through the reverse proxy instead (§5).
 
-**This application has zero external AI dependencies.** Every AI service it
-calls - transcription and translation - runs on infrastructure you control.
-There is no OpenAI, Anthropic, Google, or other third-party inference API
-call anywhere in the codebase (verified by grep as part of this revision;
-the previous `/speak` OpenAI text-to-speech route has been removed
-entirely, see the Compliance status table above).
+**This application calls the OpenAI API for both transcription and
+translation.** `ai-services/transcription` calls OpenAI's `whisper-1` audio
+transcription endpoint; `ai-services/translation` calls OpenAI Chat
+Completions (default model `gpt-4o-mini`). Both require `OPENAI_API_KEY`
+(shared via one `.env` file loaded into both containers, see §4) and make a
+real outbound HTTPS request to `api.openai.com` on every transcribe/
+translate call - there is no local model and no offline fallback. This is a
+deliberate architecture change from the originally self-hosted design (see
+the architecture note at the top of this document); the previous `/speak`
+OpenAI text-to-speech route remains removed and is unrelated to this (see
+the Compliance status table above) - it was never reintroduced.
 
 ### 1.1 Encryption in transit
 
@@ -153,73 +177,79 @@ wires it by default.
 
 ## 2. Model selection
 
-### 2.1 Transcription: faster-whisper
+### 2.1 Transcription: OpenAI `whisper-1`
 
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2
-backend) was chosen over vanilla `openai-whisper`:
-
-- 2-4x faster inference, lower memory, on both CPU and GPU, same accuracy
-  (it re-implements Whisper's architecture in CTranslate2, not a different model).
-- No `torch` dependency at all - smaller image, faster cold start.
-- Runs OpenAI's published Whisper weights (MIT license) locally; no request
-  ever leaves the machine.
-
-Configuration (env vars, see `.env.example`):
-
-| Var | Default | Notes |
-|---|---|---|
-| `WHISPER_MODEL_SIZE` | `medium` | `tiny`/`base`/`small`/`medium`/`large-v3` |
-| `WHISPER_DEVICE` | `auto` | resolves to `cuda` if available, else `cpu` |
-| `WHISPER_COMPUTE_TYPE` | `auto` | `float16` on CUDA, `int8` on CPU |
-| `WHISPER_BEAM_SIZE` | `5` | higher = slower, marginally more accurate |
-| `WHISPER_LANGUAGE` | `ur` | forced (not auto-detected) so occasional English words inside Urdu speech are transcribed inline instead of triggering a language switch |
-
-VRAM guidance for transcription:
-
-| GPU VRAM | Recommended `WHISPER_MODEL_SIZE` | Notes |
-|---|---|---|
-| Low (4-6GB) | `small` | fast, good enough for short clips |
-| Medium (8-16GB) | `medium` (default) | best accuracy/speed tradeoff for Urdu |
-| High (24GB+) | `large-v3` | best accuracy, needed for noisy/long-form audio |
-
-### 2.2 Translation: Qwen2.5-Instruct family
-
-**Chosen: `Qwen/Qwen2.5-7B-Instruct` (default), Apache-2.0.**
-
-| Model | License | Commercial use | Urdu quality | Notes |
-|---|---|---|---|---|
-| **Qwen2.5-Instruct (0.5B-72B)** | Apache-2.0 | Yes | Strong | Urdu is one of ~29 languages in its pretraining mix; strong instruction-following for a constrained "translate-only" prompt; one code path scales across all VRAM tiers |
-| Aya-23 (Cohere) | CC-BY-NC-4.0 | **No** | Strong | Disqualified: non-commercial license |
-| Aya-101 (Cohere) | Apache-2.0 | Yes | Weaker fluency | Older mT5 encoder-decoder architecture; not chat/instruction-tuned in the modern sense, weaker at following "return only the translation" style constraints |
-| NLLB-200 (Meta) | CC-BY-NC-4.0 | **No** | Strong (dedicated MT model) | Disqualified: non-commercial license; also not instruction-steerable for formatting preservation |
-| Mistral/Mixtral-Instruct | Apache-2.0 | Yes | Weaker for Urdu | Commercially fine, but Urdu is not a focus language in its training data; reported translation quality for ur->en trails Qwen2.5 |
+`ai-services/transcription/model_backend.py` is a thin wrapper around
+OpenAI's audio transcription endpoint - it no longer loads any model
+in-process. `whisper-1` is used specifically (rather than the newer
+`gpt-4o-transcribe`/`gpt-4o-mini-transcribe`) because it is currently the
+only OpenAI transcription model that supports
+`response_format="verbose_json"`, which is what this service needs to get
+back the detected `language` and audio `duration` fields on every response,
+not just the transcript text.
 
 Configuration (env vars, see `.env.example`):
 
 | Var | Default | Notes |
 |---|---|---|
-| `TRANSLATION_MODEL_NAME` | `Qwen/Qwen2.5-7B-Instruct` | any Qwen2.5-Instruct size, or another Apache-2.0/commercially-licensed chat model |
-| `TRANSLATION_DEVICE` | `auto` | resolves to `cuda` if available, else `cpu` |
-| `TRANSLATION_PRECISION` | `auto` | resolves to `int4` (bitsandbytes nf4) on CUDA, `fp32` on CPU |
+| `OPENAI_API_KEY` | *(required)* | shared with the translation service via one `.env` file; missing key fails fast at startup (`/ready` reports 503, see §1) |
+| `OPENAI_TRANSCRIBE_MODEL` | `whisper-1` | see above for why this model specifically |
+| `WHISPER_LANGUAGE` | `ur` | forced/default source language (ISO 639-1) passed to the API; kept as `WHISPER_*` since OpenAI's own hosted model here is still literally named "whisper-1". A per-request `language` override or `auto` (§2.4) is handled in `model_backend.py` |
+| `MAX_AUDIO_UPLOAD_MB` | `100` | unchanged from the self-hosted era |
+| `MAX_CONCURRENT_TRANSCRIPTIONS` | `2` | unchanged from the self-hosted era; now bounds concurrent outbound OpenAI requests rather than concurrent local GPU jobs |
+
+There is no GPU, model-size, or VRAM configuration anymore - `whisper-1`
+runs entirely on OpenAI's infrastructure.
+
+### 2.2 Translation: OpenAI Chat Completions (`gpt-4o-mini` default)
+
+`ai-services/translation/model_backend.py` sends the constructed prompt
+(§2.3) to OpenAI's Chat Completions API instead of running a local
+`transformers` model. Default model: `gpt-4o-mini`, chosen as a
+cost/latency-appropriate default for a constrained "translate only" prompt;
+override with `OPENAI_MODEL` for a higher-quality (and higher-cost) model
+such as `gpt-4o` if needed.
+
+**Why OpenAI's hosted models instead of self-hosting (e.g. Qwen2.5-Instruct,
+as earlier revisions of this document evaluated):** this was an explicit,
+deliberate architecture decision by the project owner, not a technical
+dead-end with the self-hosted approach. The tradeoff being made is real and
+worth naming: self-hosting removed any per-request cost/rate-limit exposure
+and kept inference fully private, at the cost of requiring a GPU host, model
+downloads/caching, and a CUDA/torch/transformers dependency chain to keep
+patched. Calling OpenAI's API removes all of that operational burden (no GPU
+provisioning, no model weights to manage, smaller/simpler container images -
+see §5) in exchange for a live third-party dependency: every request now
+costs money, is subject to OpenAI's rate limits, and needs network egress
+and a valid API key to function at all (§4, §7, §8). The former Cohere/Mistral/
+NLLB-style self-hosted-model comparison this section used to carry is no
+longer relevant now that the service doesn't run any local model, and has
+been removed.
+
+Configuration (env vars, see `.env.example`):
+
+| Var | Default | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | *(required)* | shared with the transcription service via one `.env` file; missing key fails fast at startup (`/ready` reports 503, see §1) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | any OpenAI chat-completions-capable model |
 | `MAX_CONTEXT_TOKENS` | `4096` | model context window budget; a startup check warns if `MAX_INPUT_TOKENS_PER_CHUNK + MAX_NEW_TOKENS` leaves it too little headroom |
-| `MAX_NEW_TOKENS` | `1024` | generation cap per chunk |
+| `MAX_NEW_TOKENS` | `1024` | generation cap per chunk (`max_tokens` on the API call) |
 | `MAX_INPUT_TOKENS_PER_CHUNK` | `700` | chunker's per-call input budget (see 2.3) |
-| `TEMPERATURE` / `TOP_P` | `0.1` / `0.9` | only used if `DO_SAMPLE=true` |
-| `DO_SAMPLE` | `false` | greedy decoding by default - deterministic, appropriate for translation |
+| `MAX_CONCURRENT_TRANSLATIONS` | `2` | unchanged from the self-hosted era; now bounds concurrent outbound OpenAI requests |
+| `TEMPERATURE` / `TOP_P` | `0.1` / `0.9` | only sent if `DO_SAMPLE=true` |
+| `DO_SAMPLE` | `false` | greedy (`temperature=0`) by default - deterministic, appropriate for translation |
+| `MAX_TRANSLATE_TEXT_LENGTH` | `20000` | unchanged from the self-hosted era, defense-in-depth input cap |
+| `WARMUP_ON_STARTUP` | `false` | **default flipped from the self-hosted era.** Warming a local model used to be free (it just loaded weights already on disk); warming up now means sending a real, billable request to the OpenAI API on every container startup, so it defaults off. Set to `true` only if paying for that startup request to avoid first-request latency is an intentional tradeoff. |
 
-VRAM guidance for translation (GPU specs for the target server were not
-available, hence everything above is env-configurable):
-
-| GPU VRAM | Model | Precision | Notes |
-|---|---|---|---|
-| Low (6-8GB) | `Qwen2.5-1.5B-Instruct` or `Qwen2.5-3B-Instruct` | `int4` | acceptable quality, fastest |
-| Medium (12-16GB) | `Qwen2.5-7B-Instruct` (default) | `int4` | recommended default - best quality/VRAM tradeoff |
-| High (24GB+) | `Qwen2.5-14B-Instruct` or `Qwen2.5-32B-Instruct` | `int8`/`bf16`, or AWQ/GPTQ pre-quantized checkpoints | best quality |
+There is no GPU, model-size, device, or precision configuration anymore -
+`TRANSLATION_DEVICE`, `TRANSLATION_PRECISION`, and `TRANSLATION_MODEL_NAME`
+no longer exist; `OPENAI_MODEL` replaces `TRANSLATION_MODEL_NAME`'s role.
 
 **Upgrade path:** the API contract (`POST /v1/translate {text}` ->
-`{translation}`) does not change if the `transformers`-based `model_backend.py`
-is later swapped for a vLLM or TGI server for higher-throughput production
-serving - only `model_backend.py`'s internals would change.
+`{translation}`) is unchanged from the self-hosted design - swapping
+`OPENAI_MODEL`, or swapping the OpenAI client in `model_backend.py` for a
+different provider's API entirely, would not require any change outside
+that file.
 
 ### 2.3 Chunking and prompt-injection defense
 
@@ -250,17 +280,18 @@ change to the original Urdu-only behavior:
 
 - **Transcription** (`POST /api/v1/transcribe`): an optional `language` field
   (ISO 639-1 code, e.g. `en`, `ar`, `hi`, or `auto`) overrides
-  `WHISPER_LANGUAGE` for that request. `auto` lets faster-whisper detect the
-  spoken language instead of forcing one - useful when the source language
-  genuinely isn't known ahead of time. Forcing a language (the default) is
-  still recommended for Urdu specifically, since it keeps occasional
-  English words inline instead of triggering a language switch mid-utterance.
+  `WHISPER_LANGUAGE` for that request. `auto` omits the `language` parameter
+  on the OpenAI API call, letting `whisper-1` detect the spoken language
+  itself instead of forcing one - useful when the source language genuinely
+  isn't known ahead of time. Forcing a language (the default) is still
+  recommended for Urdu specifically, since it keeps occasional English words
+  inline instead of triggering a language switch mid-utterance.
 - **Translation** (`POST /api/v1/translate`): `sourceLanguage`/`targetLanguage`
   fields (default `ur`/`en`) are named in the system prompt itself
   (`ai-services/translation/prompt.py:build_system_prompt`) - e.g. "You are a
   professional French-to-German translator...". Translation quality for
-  language pairs other than Urdu→English depends on Qwen2.5's own coverage
-  of those languages; it was not re-evaluated per-pair here.
+  language pairs other than Urdu→English depends on `OPENAI_MODEL`'s own
+  coverage of those languages; it was not re-evaluated per-pair here.
 - The frontend (`public/app.js`) exposes both as dropdowns (`LANGUAGES`
   list) above the transcription/translation panels, and passes the selected
   values straight through on every request.
@@ -304,9 +335,13 @@ above) - audio and text are no longer deleted immediately.
 - Users can delete any recording immediately via the History tab (or
   `DELETE /api/v1/recordings/:id`), which removes the DB row and the audio
   file together, synchronously.
-- No audio or text is used to train, fine-tune, or otherwise improve any
-  model - the models are frozen, pre-trained, open-weight checkpoints run
-  purely for inference.
+- This application does not fine-tune or train any model; audio and text
+  are sent to OpenAI purely for one-shot inference (transcribe/translate)
+  per request. Whether OpenAI itself retains or uses API request content is
+  governed by OpenAI's API data usage policy, not by this application - by
+  default OpenAI does not use API content to train its models, but this is a
+  third-party policy this project does not control, unlike the
+  fully-self-hosted design described in earlier revisions of this document.
 
 ### 3.3 Exports
 
@@ -337,52 +372,64 @@ never written to logs - see `tests/logger.test.js` and
 update above: *logs* still never contain content; the *database* now
 deliberately does.
 
-**No external AI provider is ever called for any feature.** Transcription
-and translation both run on infrastructure you control, over mutual TLS
-internally (§1.1); nothing in this application calls OpenAI, Anthropic,
-Google, or any other third-party inference API - "Google Cloud" in this
-project means the VM the containers run on, never an API call (see
-"Platform expansion" above).
+**Transcription and translation are both sent to the OpenAI API for
+processing.** Gateway↔AI-service traffic stays on mutual TLS internally
+(§1.1), but each AI service in turn makes an outbound HTTPS call to
+`api.openai.com` for every transcribe/translate request - this is no longer
+infrastructure-you-control end to end. Nothing in this application calls
+Anthropic, Google, or any other third-party inference API - only OpenAI, and
+only for these two features. Per OpenAI's API data usage policy,
+request/response content sent to the API is not used to train OpenAI's
+models by default; see OpenAI's own data usage terms if this matters for
+your deployment.
 
-- Uploaded audio is written to a temp file, transcribed, and deleted
-  immediately in a `finally` block - both at the gateway (`routes/transcribe.js`)
-  and inside the transcription service (`app.py`) - regardless of success or
-  failure.
-- Translation text is held in memory only for the duration of the request;
-  nothing is persisted to disk or a database.
-- No audio or text is used to train, fine-tune, or otherwise improve any
-  model - the models are frozen, pre-trained, open-weight checkpoints run
-  purely for inference.
+- Uploaded audio is written to a temp file, sent to the OpenAI API for
+  transcription, and deleted immediately in a `finally` block - both at the
+  gateway (`routes/transcribe.js`) and inside the transcription service
+  (`app.py`) - regardless of success or failure. The audio bytes themselves
+  do leave this application's infrastructure for the duration of that one
+  API call (they are not persisted by this app beyond the temp file).
+- Translation text is held in memory only for the duration of the request on
+  this application's side; nothing is persisted to disk or a database here.
+  The text is sent to the OpenAI API to be translated.
+- Nothing in this application fine-tunes or otherwise trains a model; the
+  translation model is invoked read-only via the Chat Completions API and
+  the transcription model via the audio transcription API, both stateless
+  per-request calls.
 - Logs are structured JSON containing only operational metadata (durations,
   byte counts, status codes, request IDs). `lib/logger.js` (Node) and
   `logging_utils.py` (Python) redact known-sensitive keys and truncate long
   free-form strings by construction, so raw Urdu/English text, audio bytes,
   and tokens are never written to logs - see `tests/logger.test.js` and
   `tests/privacyLogging.test.js`.
-- **No data leaves the private network, and no external AI provider is ever
-  called for any feature.** Transcription and translation both run on
-  infrastructure you control, over mutual TLS internally (§1.1); nothing in
-  this application calls OpenAI, Anthropic, Google, or any other third-party
-  inference API.
+- **No data leaves the private Docker network except the OpenAI API calls
+  themselves.** Transcription and translation are both delegated to OpenAI
+  over HTTPS; gateway↔AI-service traffic stays on mutual TLS internally
+  (§1.1). This is a narrower privacy boundary than the original self-hosted
+  design (see the architecture note at the top of this document) - audio and
+  text content now reaches OpenAI's infrastructure on every request, not
+  just this application's own containers.
 
 ## 4. Configuration reference
 
 See `.env.example` for the full list with defaults and inline explanations.
-Copy it to `.env` and fill in `INTERNAL_SERVICE_TOKEN` at minimum; for
-anything beyond local development, also generate and enable the mTLS certs
-(§1.1, §5). New in this revision: `DB_PATH`, `RECORDINGS_DIR`,
+Copy it to `.env` and fill in `INTERNAL_SERVICE_TOKEN` and `OPENAI_API_KEY`
+at minimum; for anything beyond local development, also generate and enable
+the mTLS certs (§1.1, §5). `OPENAI_API_KEY` is required by both AI services
+(§2.1, §2.2) - without it, `/ready` on each service reports a permanent 503.
+New in the history/multi-language revision: `DB_PATH`, `RECORDINGS_DIR`,
 `RECORDINGS_RETENTION_DAYS`, `DEFAULT_SOURCE_LANGUAGE`,
 `DEFAULT_TARGET_LANGUAGE` (§3, §2.4) - all optional, with the defaults shown
 being what Docker Compose's persistent volumes already point at.
 
 ## 5. Deployment
 
-### Local development (CPU or small GPU, TLS off)
+### Local development (CPU, TLS off)
 
 ```bash
 cd server
 npm install
-cp .env.example .env    # edit INTERNAL_SERVICE_TOKEN
+cp .env.example .env    # edit INTERNAL_SERVICE_TOKEN and OPENAI_API_KEY
 
 # Terminal 1: gateway
 npm start                # or: node serve.js
@@ -396,22 +443,29 @@ uvicorn app:app --host 0.0.0.0 --port 8001
 # Terminal 3: translation service
 cd ai-services/translation
 python -m venv .venv && .venv/Scripts/activate
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121   # or the CPU wheel
 pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8002
 ```
 
 Open `http://localhost:3000`. `INTERNAL_TLS_ENABLED`/`TLS_ENABLED` default to
-`false` here - fine for local iteration, not for anything real (§1.1).
+`false` here - fine for local iteration, not for anything real (§1.1). No
+GPU, and no `torch`/CUDA wheel install, is needed anymore - both services'
+`requirements.txt` only pull in the `openai` SDK (and `tiktoken` for the
+translation service's token counting) alongside the existing FastAPI/uvicorn
+stack.
 
-### Production (Docker Compose + GPU server)
+### Production (Docker Compose)
 
-Prerequisites on the GPU host: Docker, Docker Compose v2, NVIDIA driver, and
-the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+No GPU host is required anymore - both AI services just need outbound HTTPS
+access to `api.openai.com` and a valid `OPENAI_API_KEY`. Prerequisites:
+Docker and Docker Compose v2 on any general-purpose host (no NVIDIA driver
+or Container Toolkit needed - both Dockerfiles are plain `python:3.12-slim`
+images with no CUDA/torch/transformers/bitsandbytes/faster-whisper/
+ctranslate2 dependencies).
 
 ```bash
 cd server
-cp .env.example .env          # set a real INTERNAL_SERVICE_TOKEN, tune model/VRAM vars
+cp .env.example .env          # set a real INTERNAL_SERVICE_TOKEN and OPENAI_API_KEY
 ./scripts/generate-internal-certs.sh   # generates server/certs/ (mTLS)
 docker compose build
 docker compose up -d
@@ -420,8 +474,8 @@ curl http://localhost:3000/api/v1/ready
 ```
 
 By default the gateway is only reachable at `http://localhost:3000` (bound
-to loopback) - fine for testing directly on the GPU host, not for real
-public traffic. For a real public deployment, also start the reverse proxy:
+to loopback) - fine for testing directly on the host, not for real public
+traffic. For a real public deployment, also start the reverse proxy:
 
 ```bash
 # Point a real domain's DNS at this host first, then:
@@ -432,41 +486,6 @@ Caddy (`deploy/Caddyfile`) automatically obtains and renews a Let's Encrypt
 certificate for `PUBLIC_DOMAIN` and forwards to the gateway. Left unset, it
 defaults to `localhost` and serves its own locally-trusted certificate -
 usable for internal testing, not a real public deployment.
-
-### Hosting on Google Cloud
-
-Nothing above changes - this is the same Docker Compose stack, just running
-on a Google Cloud Compute Engine GPU VM instead of on-prem/other hardware.
-"Google Cloud" here means compute, not an AI API - Google's own
-Speech-to-Text/Translate services are never called (§0, §3.4).
-
-1. **Pick a GPU VM shape** matching the VRAM tier you need (§2.1/§2.2):
-   an `n1-standard-8` + **T4** (16GB) for the low/medium tier default
-   (`Qwen2.5-7B-Instruct` int4 + `medium` Whisper), or an `a2-highgpu-1g`
-   (**A100**, 40/80GB) for the high tier. **L4** GPUs (`g2-standard-*`) are a
-   cost-effective mid-tier option with good int4/int8 inference throughput.
-2. **Use a Deep Learning VM image or install the NVIDIA driver + Docker +
-   NVIDIA Container Toolkit yourself** - GCP's Deep Learning VM images come
-   with the driver preinstalled, which avoids a common source of driver/CUDA
-   mismatch. Either way, the prerequisites are identical to any other GPU
-   host (§ above).
-3. **Persistent disks for the named volumes**: `whisper-model-cache`,
-   `translation-model-cache`, and the new `gateway-data`/`gateway-recordings`
-   volumes (§3) should live on a persistent disk (not the VM's local SSD),
-   so model weights and recording history survive a VM restart/recreation.
-   Docker's default volume driver already stores these under
-   `/var/lib/docker/volumes` on whatever disk that is - just make sure that
-   disk is the persistent one, not an ephemeral local SSD.
-4. **Firewall**: only open 443 (and 80 for Let's Encrypt's HTTP-01
-   challenge) on the VM's firewall rules - never open 3000, 8001, 8002, or
-   443/80 wouldn't be needed at all if you terminate TLS with your own load
-   balancer instead of the bundled Caddy profile.
-5. **Static/reserved external IP + a DNS A record** pointing at it, then set
-   `PUBLIC_DOMAIN` to that domain as in the generic instructions above.
-
-This was not deployed to an actual GCP project as part of this change (no
-GCP credentials/project available in this environment) - the steps above
-are configuration guidance to follow, not a verified deployment.
 
 ### Rollback procedure
 
@@ -490,22 +509,35 @@ back the rest:
    compliance review flagged - only do this temporarily, with a plan to
    re-enable it.
 
-## 6. Performance targets
+## 6. Performance, cost, and rate limits
 
-Not yet measured against the real production GPU (unknown specs, no access
-in this environment - see §7). Documented here as the targets to benchmark
-against once real hardware is available, per the compliance review's
-recommendation:
+These targets are no longer about GPU capacity planning - both AI services
+now call the OpenAI API, so the operative concerns are latency, per-request
+cost, and OpenAI's own rate limits, not local hardware sizing. Not yet
+measured against the real OpenAI API in this environment (no live
+`OPENAI_API_KEY` exercised here - see §7). Documented here as the targets to
+benchmark once deployed:
 
 | Scenario | Target |
 |---|---|
 | Short sentence translation (≤20 words) | 95% complete within 5s |
 | Medium paragraph translation | 95% complete within 10s |
-| Long multi-paragraph translation | Agreed limit based on length (chunked, so scales roughly linearly - see §2.3) |
-| Transcription | 95% complete within an agreed multiple of audio duration (e.g. ≤0.5x for `medium` on a mid-tier GPU - to be confirmed) |
-| Concurrent users | Load-test at expected production concurrency; `MAX_CONCURRENT_TRANSCRIPTIONS`/`MAX_CONCURRENT_TRANSLATIONS` tuned to the actual GPU's VRAM once known |
-| Model cold start | Measured separately from steady-state latency; `WARMUP_ON_STARTUP=true` (default) keeps it off the first real user request |
-| Service timeout | Controlled, user-facing failure - `TRANSCRIBE_TIMEOUT_MS`/`TRANSLATE_TIMEOUT_MS` already enforce this |
+| Long multi-paragraph translation | Agreed limit based on length (chunked, so scales roughly linearly - see §2.3; each chunk is a separate OpenAI API call) |
+| Transcription | 95% complete within an agreed multiple of audio duration (network + OpenAI processing time, to be confirmed against real traffic) |
+| Concurrent users | Load-test at expected production concurrency; `MAX_CONCURRENT_TRANSCRIPTIONS`/`MAX_CONCURRENT_TRANSLATIONS` now bound concurrent outbound OpenAI requests, and should be tuned against OpenAI's account-level rate limits (requests/tokens per minute), not GPU VRAM |
+| API cold start | No local model to warm up; the only "cold start" is `WARMUP_ON_STARTUP` optionally sending one real translation request at container start (off by default - §2.2) |
+| Service timeout | Controlled, user-facing failure - `TRANSCRIBE_TIMEOUT_MS`/`TRANSLATE_TIMEOUT_MS` already enforce this, and now also bound how long a single OpenAI API call is allowed to take |
+
+**Cost and rate-limiting are now a real operational concern** that didn't
+exist with the self-hosted design: every transcribe/translate request is a
+paid OpenAI API call, and sustained traffic can hit OpenAI's per-account
+rate limits (requests/minute and tokens/minute, tier-dependent). Before
+scaling traffic in production, check the account's OpenAI rate-limit tier
+and set `MAX_CONCURRENT_TRANSCRIPTIONS`/`MAX_CONCURRENT_TRANSLATIONS` (and
+the gateway-side `MAX_CONCURRENT_TRANSCRIBE_REQUESTS`/
+`MAX_CONCURRENT_TRANSLATE_REQUESTS`) so this application can't exceed it and
+start seeing `429`s from OpenAI. There is no separate GPU capacity-planning
+concern anymore - the previous VRAM-tier guidance no longer applies.
 
 `transcription_completed.duration_ms` and `translation_completed.duration_ms`
 are already logged per-request (§8 Monitoring) specifically so these targets
@@ -514,16 +546,20 @@ instrumentation work.
 
 ## 7. Known limitations
 
-- Not verified end-to-end on a real GPU in this environment (dev machine has
-  a 2GB GPU, unsuitable for `medium` Whisper or any Qwen2.5 size, and the
-  target production GPU's specs were not provided) - see the test report for
+- Not verified end-to-end against the real OpenAI API in this environment
+  (no live `OPENAI_API_KEY` was exercised here) - see the test report for
   exactly what was and wasn't run. Performance targets (§6) are therefore
   targets, not measured results.
-- Mid-inference cancellation is best-effort: if a client disconnects while a
-  GPU call is already running inside `faster-whisper`/`transformers`, that
-  specific call cannot be forcibly interrupted (neither library exposes a
-  safe abort mid-generation); the *next* chunk/request checks
-  `request.is_disconnected()` and stops early.
+- This application now depends on `api.openai.com` being reachable and
+  responsive for every single transcribe/translate request - there is no
+  offline or degraded-local-model fallback. An OpenAI outage, rate-limit
+  rejection, or network egress failure surfaces as a user-facing error
+  (`ai_service_error`, §8) rather than a slower-but-working local response.
+- Mid-inference cancellation is best-effort: if a client disconnects while an
+  OpenAI API call is already in flight, that specific call cannot be
+  forcibly interrupted from this application's side (the OpenAI SDK call
+  simply keeps running until it returns or times out); the *next*
+  chunk/request checks `request.is_disconnected()` and stops early.
 - Internal mTLS certs (`scripts/generate-internal-certs.sh`) have no
   automated rotation - default validity is 825 days, and re-running the
   script (then restarting the containers) is a manual operation. Set a
@@ -545,8 +581,8 @@ instrumentation work.
   garble the real MIME type of a recorded clip). This is a deliberate
   compatibility tradeoff, not a strict content check - the real protections
   against abuse of that leniency are the bearer-token auth, mTLS, the
-  internal-only network placement, the size cap, and faster-whisper's own
-  decode failure on non-audio input (returned as a generic 500, never a crash).
+  internal-only network placement, the size cap, and the OpenAI API's own
+  rejection of non-audio input (returned as a generic 500, never a crash).
 - **The recording history has no per-user ownership or access control** -
   `REQUIRE_CLIENT_API_KEY` (if enabled) gates access to the API as a whole,
   same as transcribe/translate, but does not scope *which* recordings a
@@ -573,18 +609,31 @@ instrumentation work.
 
 ## 8. Monitoring recommendations
 
-- `nvidia-smi`/DCGM exporter on the GPU host for VRAM/utilization.
-- Per-service `/health` (liveness) and `/ready` (readiness, incl. model
-  loaded) probes, already wired into the Docker healthchecks (mTLS-aware -
-  see `ai-services/*/healthcheck.sh`).
+- Per-service `/health` (liveness) and `/ready` (readiness, incl. whether the
+  OpenAI client was created successfully - i.e. `OPENAI_API_KEY` was present
+  at startup) probes, already wired into the Docker healthchecks (mTLS-aware
+  - see `ai-services/*/healthcheck.sh`). There is no GPU/VRAM metric to
+  monitor anymore - both AI service containers are plain CPU containers that
+  just make outbound HTTPS calls.
 - Gateway structured logs (`transcription_completed`, `translation_completed`,
   `ai_service_error`, `unhandled_error` events) shipped to your log
-  aggregator; alert on sustained `ai_service_error`/503 rates (indicates GPU
-  saturation or a crashed model process).
+  aggregator; alert on sustained `ai_service_error`/503 rates (now indicates
+  an OpenAI API error/timeout/rate-limit rejection, or a network egress
+  problem reaching `api.openai.com`, rather than GPU saturation or a crashed
+  local model process).
+- **OpenAI usage/cost and rate-limit monitoring** (new operational concern
+  vs. the self-hosted design, see §6): track spend and request volume via
+  the OpenAI dashboard/usage API for the project's API key, and alert on
+  `429` responses surfacing as `ai_service_error` in the gateway logs -
+  sustained `429`s mean traffic is exceeding the account's current OpenAI
+  rate-limit tier and `MAX_CONCURRENT_TRANSCRIPTIONS`/
+  `MAX_CONCURRENT_TRANSLATIONS` need retuning down (or the OpenAI account
+  needs a higher tier).
 - Track `transcription_completed.duration_ms` and
   `translation_completed.duration_ms` separately (already logged per-request)
-  to catch regressions in each stage independently, and to measure against
-  the targets in §6.
+  to catch regressions in each stage independently (now largely reflecting
+  OpenAI API latency plus network round-trip, not local inference time), and
+  to measure against the targets in §6.
 - Alert on repeated `model_load_failed` at service startup.
 - Alert on internal mTLS certificate expiry (e.g. a daily
   `openssl x509 -enddate -noout -in certs/ca.crt` check) - there is no
@@ -647,6 +696,47 @@ specifically) that the model translated the sentence rather than obeying it.
 
 ## 10. Summary of changed/added files
 
+**Modified (most recent revision - OpenAI API migration, self-hosted models
+removed):**
+- `ai-services/transcription/model_backend.py` - no longer loads
+  `faster-whisper` locally; now a thin wrapper around OpenAI's audio
+  transcription API (`whisper-1`).
+- `ai-services/transcription/config.py` - removed `WHISPER_MODEL_SIZE`,
+  `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE`, `WHISPER_BEAM_SIZE`,
+  `MODEL_CACHE_DIR`; added `OPENAI_API_KEY`, `OPENAI_TRANSCRIBE_MODEL`.
+  `WHISPER_LANGUAGE` kept (§2.1).
+- `ai-services/transcription/requirements.txt`/`requirements-dev.txt` -
+  removed `faster-whisper`/`ctranslate2`/`torch`; added `openai`.
+- `ai-services/transcription/Dockerfile` - base image changed from
+  `nvidia/cuda:12.4.1-runtime-ubuntu22.04` to `python:3.12-slim`; no NVIDIA
+  Container Toolkit / CUDA requirement.
+- `ai-services/translation/model_backend.py` - no longer loads a
+  `transformers` model locally; now a thin wrapper around OpenAI Chat
+  Completions.
+- `ai-services/translation/config.py` - removed `TRANSLATION_MODEL_NAME`,
+  `TRANSLATION_DEVICE`, `TRANSLATION_PRECISION`, `MODEL_CACHE_DIR`; added
+  `OPENAI_API_KEY`, `OPENAI_MODEL`. `WARMUP_ON_STARTUP` default flipped from
+  `true` to `false` (§2.2).
+- `ai-services/translation/requirements.txt`/`requirements-dev.txt` -
+  removed `torch`/`transformers`/`bitsandbytes`/`accelerate`; added
+  `openai`/`tiktoken`.
+- `ai-services/translation/Dockerfile` - base image changed from
+  `nvidia/cuda:12.4.1-runtime-ubuntu22.04` to `python:3.12-slim`; no NVIDIA
+  Container Toolkit / CUDA requirement.
+- `docker-compose.yml` - removed `deploy.resources.reservations.devices` GPU
+  reservations and the `whisper-model-cache`/`translation-model-cache`
+  volumes on both AI services; memory limits dropped to `512M` each (was
+  `8G`/`24G`); `internal` network comment updated to reflect per-request (not
+  just startup) OpenAI egress.
+- `.env.example` - removed the old device/precision/model-size vars listed
+  above; added `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_TRANSCRIBE_MODEL`;
+  renamed `RUN_GPU_INTEGRATION_TESTS` to `RUN_OPENAI_INTEGRATION_TESTS`.
+- `tests/integration/transcribe.integration.test.js`,
+  `tests/integration/translate.integration.test.js`,
+  `ai-services/*/tests/test_integration.py` - gate env var renamed
+  `RUN_GPU_INTEGRATION_TESTS` -> `RUN_OPENAI_INTEGRATION_TESTS`; now exercise
+  the real OpenAI API when enabled, instead of a real local GPU model.
+
 **Modified (latest revision - frontend redesign + MP3 conversion utility):**
 - `public/index.html`/`style.css`/`app.js` - see "Frontend redesign & plain
   MP3 conversion endpoint" above for the full description (theme system,
@@ -706,10 +796,15 @@ specifically) that the model translated the sentence rather than obeying it.
   `DEFAULT_TARGET_LANGUAGE`.
 - `.gitignore` - adds `data/` and `recordings/*` (real user data, never committed).
 
-**Modified (prior revision - mTLS/OpenAI removal, unchanged since):**
+**Modified (prior revision - mTLS/OpenAI-TTS removal):**
 - security headers, CORS, request IDs, structured logging, graceful
-  shutdown; the `/speak` (OpenAI TTS) route, its cache directory, and
-  `OPENAI_API_KEY` were removed entirely; mTLS wiring throughout.
+  shutdown; the `/speak` (OpenAI TTS) route and its cache directory were
+  removed entirely; mTLS wiring throughout. `OPENAI_API_KEY` was removed at
+  the time too, but has since been reintroduced by the later OpenAI API
+  migration (see the top of this section and the architecture note at the
+  top of this document) - for a different purpose (transcription/
+  translation, not text-to-speech) and in a different place (the two AI
+  services, not the gateway).
 
 **Added (Node gateway, history/multi-language/exports revision):**
 - `lib/db.js` - SQLite connection + schema (`recordings` table).
@@ -749,7 +844,8 @@ specifically) that the model translated the sentence rather than obeying it.
 - `deploy/Caddyfile` - optional public HTTPS reverse proxy
 - `docs/AI_FEATURE.md` (this file)
 
-**Current test counts** (all run and passing in this environment, unlike
-GPU inference - see §7): **85 Node tests** (`npm test`), **55 Python tests**
-(21 transcription + 34 translation, 2 more skipped by design pending real
-GPU access).
+**Current test counts** (all run and passing in this environment, unlike the
+real OpenAI API calls the integration suites gate behind
+`RUN_OPENAI_INTEGRATION_TESTS` - see §7): **85 Node tests** (`npm test`),
+**55 Python tests** (21 transcription + 34 translation, 2 more skipped by
+design pending a real `OPENAI_API_KEY`/network access in this environment).

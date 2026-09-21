@@ -4,7 +4,8 @@ import asyncio
 class BoundedConcurrency:
     """Non-blocking admission guard: try_acquire() returns False immediately
     once `limit` requests are in flight, so a burst of traffic fails fast
-    with 503 rather than piling up and exhausting GPU memory."""
+    with 503 rather than piling up and hitting the OpenAI API's own rate
+    limits."""
 
     def __init__(self, limit):
         self.limit = limit

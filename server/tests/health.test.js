@@ -40,7 +40,7 @@ test("GET /api/v1/ready reports not_ready when an AI service is unreachable", as
     expect(res.body.status).toBe("not_ready");
 });
 
-test("the /speak (OpenAI TTS) route no longer exists - the app has zero external AI dependencies", async () => {
+test("the old /speak (browser-TTS-replacement) route no longer exists", async () => {
     const res = await request(app).post("/speak").send({ text: "hello" });
     expect(res.status).toBe(404);
 });

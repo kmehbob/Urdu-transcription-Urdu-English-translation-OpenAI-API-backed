@@ -1,6 +1,3 @@
-# Requires the NVIDIA Container Toolkit on the host for the `gpu` device
-# reservations below to work (https://github.com/NVIDIA/nvidia-container-toolkit).
-#
 # Before first `docker compose up`, generate the internal mTLS certs:
 #   ./scripts/generate-internal-certs.sh
 #
@@ -64,11 +61,10 @@ services:
       - .env
     environment:
       # Both services share one .env file, so a key defined in it (like
-      # MODEL_CACHE_DIR) can only have one value across both containers -
-      # these overrides are what actually make the two services' ports and
-      # cache paths differ, regardless of what .env itself contains.
+      # SERVICE_PORT) can only have one value across both containers - these
+      # overrides are what actually make the two services' ports differ,
+      # regardless of what .env itself contains.
       SERVICE_PORT: "8001"
-      MODEL_CACHE_DIR: /models/whisper
       TLS_ENABLED: "true"
       TLS_CERT_FILE: /certs/transcription-server.crt
       TLS_KEY_FILE: /certs/transcription-server.key
@@ -79,7 +75,6 @@ services:
       INTERNAL_TLS_CLIENT_CERT_FILE: /certs/gateway-client.crt
       INTERNAL_TLS_CLIENT_KEY_FILE: /certs/gateway-client.key
     volumes:
-      - whisper-model-cache:/models/whisper
       - ./certs:/certs:ro
     networks:
       - internal
@@ -89,12 +84,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+          memory: 512M
 
   translation:
     build: ./ai-services/translation
@@ -104,7 +94,6 @@ services:
     environment:
       # See the same note on the transcription service above.
       SERVICE_PORT: "8002"
-      MODEL_CACHE_DIR: /models/translation
       TLS_ENABLED: "true"
       TLS_CERT_FILE: /certs/translation-server.crt
       TLS_KEY_FILE: /certs/translation-server.key
@@ -112,7 +101,6 @@ services:
       INTERNAL_TLS_CLIENT_CERT_FILE: /certs/gateway-client.crt
       INTERNAL_TLS_CLIENT_KEY_FILE: /certs/gateway-client.key
     volumes:
-      - translation-model-cache:/models/translation
       - ./certs:/certs:ro
     networks:
       - internal
@@ -120,12 +108,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 24G
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+          memory: 512M
 
   # Optional public-facing TLS termination: `docker compose --profile proxy up -d`.
   # Set PUBLIC_DOMAIN to a real domain pointing at this host for Caddy to
@@ -154,20 +137,17 @@ services:
 networks:
   internal:
     driver: bridge
-    # Egress is needed once, at first startup, for the transcription/
-    # translation containers to download open-weight model files from
-    # Hugging Face into their cache volumes (see below) - not for inference,
-    # which never leaves this network. It is not set to `internal: true`
-    # because that one-time download would then have no route out; the
-    # bearer-token auth, per-service mTLS, and the fact that no port is
-    # published are the controls actually protecting this network.
+    # Egress is needed on every request: the transcription/translation
+    # containers call the OpenAI API for every transcribe/translate request,
+    # not just at startup. It is not set to `internal: true` because that
+    # would cut off that route out; the bearer-token auth, per-service mTLS,
+    # and the fact that no port is published are the controls actually
+    # protecting this network from the inside.
     internal: false
   public:
     driver: bridge
 
 volumes:
-  whisper-model-cache:
-  translation-model-cache:
   caddy-data:
   caddy-config:
   gateway-data:

@@ -2,57 +2,72 @@ import model_backend
 import config
 
 
-class FakeSegment:
-    def __init__(self, text):
+class FakeTranscription:
+    def __init__(self, text, language, duration):
         self.text = text
-
-
-class FakeInfo:
-    def __init__(self, language):
         self.language = language
+        self.duration = duration
 
 
-class FakeModel:
-    def __init__(self):
-        self.last_language_kwarg = "not-called"
+class FakeTranscriptions:
+    def __init__(self, response):
+        self.response = response
+        self.last_kwargs = None
 
-    def transcribe(self, file_path, language=None, beam_size=None, vad_filter=None):
-        self.last_language_kwarg = language
-        return [FakeSegment("hello")], FakeInfo(language or "ur")
+    def create(self, **kwargs):
+        self.last_kwargs = kwargs
+        return self.response
 
 
-def test_no_override_uses_configured_default_language(monkeypatch):
-    fake = FakeModel()
-    monkeypatch.setattr(model_backend, "load_model", lambda: fake)
+class FakeAudio:
+    def __init__(self, response):
+        self.transcriptions = FakeTranscriptions(response)
+
+
+class FakeClient:
+    def __init__(self, response):
+        self.audio = FakeAudio(response)
+
+
+def _install_fake_client(monkeypatch, response):
+    fake = FakeClient(response)
+    monkeypatch.setattr(model_backend, "_client", fake)
+    return fake
+
+
+def test_no_override_uses_configured_default_language(monkeypatch, tmp_path):
+    fake = _install_fake_client(monkeypatch, FakeTranscription("hello", "ur", 1.5))
     monkeypatch.setattr(config, "WHISPER_LANGUAGE", "ur")
+    audio_path = tmp_path / "fake.mp3"
+    audio_path.write_bytes(b"fake-audio-bytes")
 
-    model_backend.transcribe_file("fake.mp3")
-    assert fake.last_language_kwarg == "ur"
-
-
-def test_auto_override_disables_forced_language(monkeypatch):
-    fake = FakeModel()
-    monkeypatch.setattr(model_backend, "load_model", lambda: fake)
-
-    model_backend.transcribe_file("fake.mp3", language_override="auto")
-    assert fake.last_language_kwarg is None
+    model_backend.transcribe_file(str(audio_path))
+    assert fake.audio.transcriptions.last_kwargs["language"] == "ur"
 
 
-def test_explicit_override_takes_precedence_over_configured_default(monkeypatch):
-    fake = FakeModel()
-    monkeypatch.setattr(model_backend, "load_model", lambda: fake)
+def test_auto_override_omits_language_kwarg(monkeypatch, tmp_path):
+    fake = _install_fake_client(monkeypatch, FakeTranscription("hello", "ur", 1.5))
+    audio_path = tmp_path / "fake.mp3"
+    audio_path.write_bytes(b"fake-audio-bytes")
+
+    model_backend.transcribe_file(str(audio_path), language_override="auto")
+    assert "language" not in fake.audio.transcriptions.last_kwargs
+
+
+def test_explicit_override_takes_precedence_over_configured_default(monkeypatch, tmp_path):
+    fake = _install_fake_client(monkeypatch, FakeTranscription("bonjour", "fr", 1.0))
     monkeypatch.setattr(config, "WHISPER_LANGUAGE", "ur")
+    audio_path = tmp_path / "fake.mp3"
+    audio_path.write_bytes(b"fake-audio-bytes")
 
-    model_backend.transcribe_file("fake.mp3", language_override="fr")
-    assert fake.last_language_kwarg == "fr"
+    model_backend.transcribe_file(str(audio_path), language_override="fr")
+    assert fake.audio.transcriptions.last_kwargs["language"] == "fr"
 
 
-def test_result_shape_and_text_joining(monkeypatch):
-    class MultiSegModel(FakeModel):
-        def transcribe(self, file_path, language=None, beam_size=None, vad_filter=None):
-            return [FakeSegment("hello "), FakeSegment(""), FakeSegment("world")], FakeInfo("en")
+def test_result_shape(monkeypatch, tmp_path):
+    _install_fake_client(monkeypatch, FakeTranscription("hello world", "en", 2.5))
+    audio_path = tmp_path / "fake.mp3"
+    audio_path.write_bytes(b"fake-audio-bytes")
 
-    monkeypatch.setattr(model_backend, "load_model", lambda: MultiSegModel())
-    result = model_backend.transcribe_file("fake.mp3", language_override="en")
-    assert result["text"] == "hello world"
-    assert result["language"] == "en"
+    result = model_backend.transcribe_file(str(audio_path), language_override="en")
+    assert result == {"text": "hello world", "language": "en", "duration_seconds": 2.5}

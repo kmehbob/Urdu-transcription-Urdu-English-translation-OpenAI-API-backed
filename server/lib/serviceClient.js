@@ -63,7 +63,13 @@ function createServiceClient(baseURL, timeoutMs) {
 async function callService({ client, req, method, url, data, axiosOpts, serviceLabel }) {
     const controller = new AbortController();
     const onClose = () => controller.abort();
-    if (req) req.on("close", onClose);
+    // req.on("close") is NOT a reliable client-disconnect signal: the
+    // IncomingMessage's own 'close' fires once its body has been fully
+    // read/destroyed (e.g. right after multer/express.json() consumes it),
+    // long before the response is sent, even though the connection is still
+    // open. req.socket's 'close' only fires when the underlying TCP
+    // connection actually terminates, which is what we actually want here.
+    if (req?.socket) req.socket.on("close", onClose);
 
     try {
         const response = await client.request({
@@ -109,7 +115,7 @@ async function callService({ client, req, method, url, data, axiosOpts, serviceL
         }
         throw new AiServiceError(`${serviceLabel} failed to process the request`, 502, err);
     } finally {
-        if (req) req.removeListener("close", onClose);
+        if (req?.socket) req.socket.removeListener("close", onClose);
     }
 }
 

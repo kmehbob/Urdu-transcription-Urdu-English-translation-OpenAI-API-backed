@@ -32,11 +32,12 @@ TLS_CERT_FILE = os.environ.get("TLS_CERT_FILE", "")
 TLS_KEY_FILE = os.environ.get("TLS_KEY_FILE", "")
 TLS_CLIENT_CA_FILE = os.environ.get("TLS_CLIENT_CA_FILE", "")
 
-# Model / hardware. See docs/AI_FEATURE.md for the VRAM-tiered alternatives.
-TRANSLATION_MODEL_NAME = os.environ.get("TRANSLATION_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
-TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "auto")  # auto | cuda | cpu
-# fp32 | fp16 | bf16 | int8 | int4  ("auto" -> int4 on cuda, fp32 on cpu)
-TRANSLATION_PRECISION = os.environ.get("TRANSLATION_PRECISION", "auto")
+# Translation is delegated to the OpenAI API - no local model/GPU. Left
+# empty by default so a missing key fails clearly at load_model() (caught by
+# app.py's lifespan handler, surfaced as a permanent 503 via /ready) instead
+# of at import time, matching how INTERNAL_SERVICE_TOKEN is handled above.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 MAX_CONTEXT_TOKENS = _int(os.environ.get("MAX_CONTEXT_TOKENS"), 4096)
 MAX_NEW_TOKENS = _int(os.environ.get("MAX_NEW_TOKENS"), 1024)
@@ -52,21 +53,12 @@ DO_SAMPLE = _bool(os.environ.get("DO_SAMPLE"), False)
 # it again so it is never reachable directly without the same protection.
 MAX_TRANSLATE_TEXT_LENGTH = _int(os.environ.get("MAX_TRANSLATE_TEXT_LENGTH"), 20000)
 
-MODEL_CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "/models/translation")
-
-WARMUP_ON_STARTUP = _bool(os.environ.get("WARMUP_ON_STARTUP"), True)
+# Off by default: unlike warming up a local model, this sends a real (paid)
+# request to the OpenAI API on every startup.
+WARMUP_ON_STARTUP = _bool(os.environ.get("WARMUP_ON_STARTUP"), False)
 
 # Fail fast at startup on a bad config value instead of a confusing failure
-# deep inside load_model() at first request. TRANSLATION_MODEL_NAME is
-# deliberately NOT validated against a fixed list - it's any HuggingFace
-# repo name/local path.
-_VALID_DEVICES = {"auto", "cpu", "cuda"}
-_VALID_PRECISIONS = {"auto", "fp32", "fp16", "bf16", "int8", "int4"}
-
-if TRANSLATION_DEVICE not in _VALID_DEVICES:
-    raise ValueError(f"Invalid TRANSLATION_DEVICE={TRANSLATION_DEVICE!r}; must be one of {sorted(_VALID_DEVICES)}")
-if TRANSLATION_PRECISION not in _VALID_PRECISIONS:
-    raise ValueError(f"Invalid TRANSLATION_PRECISION={TRANSLATION_PRECISION!r}; must be one of {sorted(_VALID_PRECISIONS)}")
+# deep inside a request handler.
 if MAX_CONCURRENT_TRANSLATIONS <= 0:
     raise ValueError(f"MAX_CONCURRENT_TRANSLATIONS must be a positive integer, got {MAX_CONCURRENT_TRANSLATIONS}")
 if MAX_CONTEXT_TOKENS <= 0:

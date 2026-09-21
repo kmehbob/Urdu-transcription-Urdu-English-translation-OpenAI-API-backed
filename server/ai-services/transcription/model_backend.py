@@ -1,9 +1,10 @@
-"""Thin wrapper around faster-whisper so app.py never imports it directly.
+"""Thin wrapper around the OpenAI audio transcription API so app.py never
+imports it directly.
 
-Keeping the heavy import (and the module-level model singleton) behind this
-small surface lets unit tests substitute a fake backend via
-`sys.modules['model_backend'] = fake` without installing faster-whisper/
-ctranslate2, which are multi-GB GPU-oriented dependencies.
+Keeping the client behind this small surface lets unit tests substitute a
+fake backend via `sys.modules['model_backend'] = fake` without installing
+the openai package, and mirrors the structure of the translation service's
+model_backend.py.
 """
 import time
 
@@ -12,90 +13,61 @@ from logging_utils import get_logger, log
 
 logger = get_logger("transcription.model_backend")
 
-_model = None
-_resolved_device = None
-_resolved_compute_type = None
-
-
-def resolve_device():
-    if config.WHISPER_DEVICE != "auto":
-        return config.WHISPER_DEVICE
-    try:
-        import ctranslate2
-
-        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-    except Exception:
-        return "cpu"
-
-
-def resolve_compute_type(device):
-    if config.WHISPER_COMPUTE_TYPE != "auto":
-        return config.WHISPER_COMPUTE_TYPE
-    return "float16" if device == "cuda" else "int8"
+_client = None
 
 
 def load_model():
-    """Loads the faster-whisper model once. Safe to call multiple times."""
-    global _model, _resolved_device, _resolved_compute_type
-    if _model is not None:
-        return _model
+    """Creates the OpenAI client once. Safe to call multiple times."""
+    global _client
+    if _client is not None:
+        return _client
 
-    from faster_whisper import WhisperModel
+    if not config.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
 
-    _resolved_device = resolve_device()
-    _resolved_compute_type = resolve_compute_type(_resolved_device)
+    from openai import OpenAI
 
     started = time.monotonic()
-    log(
-        logger,
-        "info",
-        "loading_whisper_model",
-        model_size=config.WHISPER_MODEL_SIZE,
-        device=_resolved_device,
-        compute_type=_resolved_compute_type,
-    )
-    _model = WhisperModel(
-        config.WHISPER_MODEL_SIZE,
-        device=_resolved_device,
-        compute_type=_resolved_compute_type,
-        download_root=config.MODEL_CACHE_DIR,
-    )
-    log(logger, "info", "whisper_model_loaded", load_ms=round((time.monotonic() - started) * 1000))
-    return _model
+    log(logger, "info", "creating_openai_client", model=config.OPENAI_TRANSCRIBE_MODEL)
+    _client = OpenAI(api_key=config.OPENAI_API_KEY)
+    log(logger, "info", "openai_client_ready", load_ms=round((time.monotonic() - started) * 1000))
+    return _client
 
 
 def is_ready():
-    return _model is not None
+    return _client is not None
 
 
 def transcribe_file(file_path, language_override=None):
-    """Runs transcription on a local file path.
+    """Runs transcription on a local file path via the OpenAI API.
 
     By default (and for Urdu, the primary use case) the language is forced
     rather than auto-detected, so occasional English words in otherwise-Urdu
     speech are transcribed inline rather than triggering language
     auto-switching mid-utterance. `language_override` lets a caller request
-    a different fixed language, or explicit "auto" to let faster-whisper
-    detect it (useful for genuinely multilingual/unknown-source-language input).
+    a different fixed language, or explicit "auto" to let the API detect it
+    (useful for genuinely multilingual/unknown-source-language input).
     """
-    model = load_model()
+    if _client is None:
+        raise RuntimeError("Client not loaded")
 
     if language_override == "auto":
         language = None
     else:
         language = language_override or config.WHISPER_LANGUAGE
 
-    segments, info = model.transcribe(
-        file_path,
-        language=language,
-        beam_size=config.WHISPER_BEAM_SIZE,
-        vad_filter=config.WHISPER_VAD_FILTER,
-    )
-
-    text_parts = [segment.text.strip() for segment in segments if segment.text and segment.text.strip()]
+    with open(file_path, "rb") as audio_file:
+        request_kwargs = dict(
+            model=config.OPENAI_TRANSCRIBE_MODEL,
+            file=audio_file,
+            response_format="verbose_json",
+        )
+        if language:
+            request_kwargs["language"] = language
+        result = _client.audio.transcriptions.create(**request_kwargs)
 
     return {
-        "text": " ".join(text_parts).strip(),
-        "language": getattr(info, "language", None) or config.WHISPER_LANGUAGE,
-        "duration_seconds": getattr(info, "duration", None),
+        "text": (result.text or "").strip(),
+        "language": getattr(result, "language", None) or language or config.WHISPER_LANGUAGE,
+        "duration_seconds": getattr(result, "duration", None),
     }

@@ -1,7 +1,7 @@
 // Exercises the REAL ffmpeg-static/ffprobe-static binaries (bundled, fast,
-// deterministic - unlike the multi-GB GPU models, there's no reason to mock
-// this). A tiny synthetic tone is generated once and converted through the
-// real pipeline every test run.
+// deterministic - unlike the OpenAI-backed transcription/translation calls,
+// there's no reason to mock this). A tiny synthetic tone is generated once
+// and converted through the real pipeline every test run.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

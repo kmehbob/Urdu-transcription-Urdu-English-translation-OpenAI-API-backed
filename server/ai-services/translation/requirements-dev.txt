@@ -1,8 +1,8 @@
 # Minimal deps for running tests/test_app.py and tests/test_chunker.py,
-# which stub model_backend / inject a fake token counter so torch/
-# transformers never need to be installed for these unit tests. Install
+# which stub model_backend / inject a fake token counter so the openai
+# package never needs to be installed for these unit tests. Install
 # requirements.txt as well before running integration tests against the
-# real model.
+# real OpenAI API.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pytest==8.3.4

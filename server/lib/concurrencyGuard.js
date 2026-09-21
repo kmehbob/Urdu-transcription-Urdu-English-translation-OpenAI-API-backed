@@ -1,5 +1,5 @@
 // Simple counting semaphore used as Express middleware to cap how many
-// expensive GPU-bound requests (transcribe/translate) the gateway will
+// expensive OpenAI-backed requests (transcribe/translate) the gateway will
 // forward concurrently. This is defense-in-depth on top of the semaphores
 // enforced inside each Python AI service, so a burst of requests fails fast
 // with 503 at the gateway instead of queuing indefinitely.

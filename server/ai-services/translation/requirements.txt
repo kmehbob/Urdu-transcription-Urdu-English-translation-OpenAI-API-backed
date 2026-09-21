@@ -1,12 +1,6 @@
-# Pinned exact versions.
-# torch is intentionally NOT pinned to a plain PyPI wheel here: install it
-# first from the CUDA-matched index for your GPU driver, e.g.
-#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
-# then install the rest of this file. See docs/AI_FEATURE.md and Dockerfile.
+# Pinned exact versions. Translation runs against the OpenAI API - no
+# torch/transformers/GPU dependency.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-transformers==4.47.1
-accelerate==1.2.1
-bitsandbytes==0.45.0
-sentencepiece==0.2.0
-protobuf==5.29.2
+openai==1.59.6
+tiktoken==0.8.0

@@ -1,7 +1,7 @@
 # Minimal deps for running the unit tests in tests/test_app.py, which stub
-# model_backend before startup so faster-whisper/ctranslate2 never need to be
+# model_backend before startup so the openai package never needs to be
 # installed. Install requirements.txt as well before running integration
-# tests that exercise the real model.
+# tests that exercise the real OpenAI API.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20

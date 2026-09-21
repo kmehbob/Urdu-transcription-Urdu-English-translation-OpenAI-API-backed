@@ -25,15 +25,20 @@ TLS_CERT_FILE = os.environ.get("TLS_CERT_FILE", "")
 TLS_KEY_FILE = os.environ.get("TLS_KEY_FILE", "")
 TLS_CLIENT_CA_FILE = os.environ.get("TLS_CLIENT_CA_FILE", "")
 
-# "auto" resolves to cuda if available at startup, else cpu.
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "medium")
-WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
-WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "auto")
-WHISPER_BEAM_SIZE = _int(os.environ.get("WHISPER_BEAM_SIZE"), 5)
-WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "ur")
-WHISPER_VAD_FILTER = _bool(os.environ.get("WHISPER_VAD_FILTER"), True)
+# Transcription is delegated to the OpenAI audio API - no local model/GPU.
+# Left empty by default so a missing key fails clearly at load_model()
+# (caught by app.py's lifespan handler, surfaced as a permanent 503 via
+# /ready) instead of at import time.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+# whisper-1 is the only OpenAI transcription model that supports
+# response_format="verbose_json", which is what gives us the per-request
+# detected `language` and `duration` this service's response shape needs.
+OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 
-MODEL_CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "/models/whisper")
+# Forced/default source language (ISO-639-1) passed to the API. See
+# transcribe_file() in model_backend.py for how a per-request override or
+# "auto" interacts with this default.
+WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "ur")
 
 MAX_AUDIO_UPLOAD_MB = _int(os.environ.get("MAX_AUDIO_UPLOAD_MB"), 100)
 MAX_CONCURRENT_TRANSCRIPTIONS = _int(os.environ.get("MAX_CONCURRENT_TRANSCRIPTIONS"), 2)
@@ -62,17 +67,7 @@ EXTENSION_BY_CONTENT_TYPE = {
 }
 
 # Fail fast at startup on a bad config value instead of a confusing failure
-# deep inside load_model() at first request. WHISPER_MODEL_SIZE is
-# deliberately NOT validated against a fixed list here - faster-whisper also
-# accepts arbitrary HuggingFace repo names/local paths for custom/fine-tuned
-# models, so a closed enum would reject legitimate values.
-_VALID_DEVICES = {"auto", "cpu", "cuda"}
-_VALID_COMPUTE_TYPES = {"auto", "int8", "int8_float16", "int8_float32", "int16", "float16", "float32", "bfloat16"}
-
-if WHISPER_DEVICE not in _VALID_DEVICES:
-    raise ValueError(f"Invalid WHISPER_DEVICE={WHISPER_DEVICE!r}; must be one of {sorted(_VALID_DEVICES)}")
-if WHISPER_COMPUTE_TYPE not in _VALID_COMPUTE_TYPES:
-    raise ValueError(f"Invalid WHISPER_COMPUTE_TYPE={WHISPER_COMPUTE_TYPE!r}; must be one of {sorted(_VALID_COMPUTE_TYPES)}")
+# deep inside a request handler.
 if MAX_CONCURRENT_TRANSCRIPTIONS <= 0:
     raise ValueError(f"MAX_CONCURRENT_TRANSCRIPTIONS must be a positive integer, got {MAX_CONCURRENT_TRANSCRIPTIONS}")
 if MAX_AUDIO_UPLOAD_MB <= 0:

@@ -1,7 +1,7 @@
 // Central environment configuration with sensible defaults.
-// All AI-service / GPU-related knobs live here so they can be tuned per
-// deployment (low/medium/high VRAM) without touching code. See
-// docs/AI_FEATURE.md for guidance on each value.
+// All AI-service-related knobs live here so they can be tuned per
+// deployment without touching code. See docs/AI_FEATURE.md for guidance on
+// each value.
 
 function bool(value, fallback) {
     if (value === undefined || value === null || value === "") return fallback;
@@ -56,8 +56,8 @@ const config = {
     maxAudioUploadMb: int(process.env.MAX_AUDIO_UPLOAD_MB, 100),
     maxTranslateTextLength: int(process.env.MAX_TRANSLATE_TEXT_LENGTH, 20000),
 
-    // Gateway-side concurrency guards (defense in depth, GPU services also
-    // enforce their own semaphores)
+    // Gateway-side concurrency guards (defense in depth, the AI services
+    // also enforce their own semaphores)
     maxConcurrentTranscribeRequests: int(process.env.MAX_CONCURRENT_TRANSCRIBE_REQUESTS, 4),
     maxConcurrentTranslateRequests: int(process.env.MAX_CONCURRENT_TRANSLATE_REQUESTS, 8),
 

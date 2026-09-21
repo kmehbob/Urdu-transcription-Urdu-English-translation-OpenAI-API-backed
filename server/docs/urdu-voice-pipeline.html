@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Architecture, security layers, and step-by-step GPU deployment guide for the self-hosted Urdu transcription and translation system.">
+<meta name="description" content="Architecture, security layers, and step-by-step deployment guide for the Urdu transcription and translation system, powered by the OpenAI API.">
 <title>Urdu Voice Pipeline</title>
 <style>
   :root {
@@ -391,7 +391,7 @@
   <nav class="side" aria-label="Document sections">
     <div class="brand">
       <span class="mark">urdu-voice-pipeline</span>
-      <span class="tag">Architecture &amp; GPU deployment reference</span>
+      <span class="tag">Architecture &amp; deployment reference (OpenAI API)</span>
     </div>
     <input type="checkbox" id="nav-toggle" style="display:none">
     <label class="nav-toggle-btn" for="nav-toggle">☰ Sections</label>
@@ -409,11 +409,11 @@
       <li><a href="#security">Security model</a></li>
       <li><a href="#models">Model selection</a></li>
 
-      <li class="group-label">GPU deployment</li>
+      <li class="group-label">Deployment</li>
       <li><a href="#gpu-prereq" class="sub">Prerequisites</a></li>
       <li><a href="#gpu-compose" class="sub">Docker Compose (recommended)</a></li>
       <li><a href="#gpu-native" class="sub">Native / bare-metal</a></li>
-      <li><a href="#gpu-verify" class="sub">Verifying GPU use</a></li>
+      <li><a href="#gpu-verify" class="sub">Verifying the OpenAI API is used</a></li>
       <li><a href="#gpu-troubleshoot" class="sub">Troubleshooting</a></li>
 
       <li class="group-label">Operations</li>
@@ -428,38 +428,50 @@
 
   <main>
     <header class="hero">
-      <span class="eyebrow">Architecture reference · v1</span>
-      <h1>Urdu speech-to-text &amp; Urdu→English translation, fully self-hosted</h1>
+      <span class="eyebrow">Architecture reference · v2</span>
+      <h1>Urdu speech-to-text &amp; Urdu→English translation, powered by the OpenAI API</h1>
       <p class="lede">
-        A private, GPU-accelerated pipeline added to the existing Express app: record or type Urdu,
-        transcribe it locally with faster-whisper, edit the text, then translate it to fluent English
-        with a self-hosted LLM — no OpenAI, Anthropic, Google, or other third-party inference API involved anywhere.
+        A pipeline added to the existing Express app: record or type Urdu, transcribe it via OpenAI's
+        <code>whisper-1</code> audio transcription endpoint, edit the text, then translate it to fluent English via
+        OpenAI Chat Completions. Nothing in this application calls Anthropic, Google, or any other third-party
+        inference API — only OpenAI, and only for these two features.
       </p>
       <div class="chips">
         <span class="chip">Node.js · Express gateway</span>
         <span class="chip">Python · FastAPI</span>
-        <span class="chip">faster-whisper (CUDA)</span>
-        <span class="chip">Qwen2.5-Instruct (CUDA)</span>
+        <span class="chip">OpenAI whisper-1</span>
+        <span class="chip">OpenAI Chat Completions (gpt-4o-mini)</span>
         <span class="chip">Mutual TLS internally</span>
-        <span class="chip">Docker Compose · NVIDIA Container Toolkit</span>
+        <span class="chip">Docker Compose · no GPU required</span>
+      </div>
+      <div class="callout" style="margin-top:8px">
+        <p><strong>Architecture update:</strong> earlier revisions of this document described a fully self-hosted
+        stack — <code>faster-whisper</code> for transcription, a locally-loaded <code>Qwen2.5-7B-Instruct</code> for
+        translation, both requiring a GPU. That stack has been <strong>removed and replaced with calls to the OpenAI
+        API</strong>, per an explicit architecture decision by the project owner — a deliberate simplification (no
+        GPU host, no model downloads/caching, no CUDA/torch dependency chain), not a security response. See
+        <a href="#models">§6 Model selection</a> for the current model/config surface and
+        <a href="#gpu-deployment">§7</a> for the current (GPU-free) deployment story. Sections below that describe
+        the old "zero third-party API" stance have been corrected in place; historical context about the earlier
+        self-hosted design is kept where useful but no longer reflects the current architecture.</p>
       </div>
       <div class="callout" style="margin-top:8px">
         <p><strong>Compliance update:</strong> a formal SOW review flagged unencrypted gateway↔AI-service traffic and
-        the OpenAI-backed <code>/speak</code> route as gaps. Both are resolved as of this revision — see
+        the OpenAI-backed <code>/speak</code> route as gaps. Both were resolved as of that revision — see
         <a href="#security">§5 Security model</a> and <a href="#gpu-compose">§7 Docker Compose</a> for mutual TLS,
-        and the design-constraints table just below for the <code>/speak</code>/OpenAI removal. Production performance
-        and full end-to-end QA still require the real GPU server, which remains outside this environment's access —
-        reported honestly as pending in <a href="#appendix">§12</a>, not claimed as done.</p>
+        and the design-constraints table just below for the <code>/speak</code>/OpenAI-TTS removal (unrelated to,
+        and unaffected by, the later OpenAI API migration described above — <code>/speak</code> remains removed;
+        transcription/translation now use OpenAI for a different reason). Production performance and full
+        end-to-end QA against the real OpenAI API are still pending in this environment — reported honestly as
+        pending in <a href="#appendix">§12</a>, not claimed as done.</p>
       </div>
       <div class="callout" style="margin-top:8px">
         <p><strong>Platform expansion:</strong> a broader "Audio Transcription &amp; Translation Platform" requirements
         document added record+upload with drag-and-drop, pause/resume with a live level meter, multi-language
-        transcription/translation, MP3/TXT/DOCX/PDF export, a permanent recording history, and Google Cloud as a
-        hosting target. Two of those items directly reversed prior decisions in this document, and were confirmed
-        explicitly rather than assumed: recordings and their transcripts/translations are now <strong>kept
-        permanently</strong> (not deleted after the request — see <a href="#history">§8a</a>), and Google Cloud is
-        used <strong>only to host this same self-hosted stack on a GPU VM</strong> — no Google AI/Speech API is
-        called anywhere. See <a href="#history">§8a</a> for the full detail.</p>
+        transcription/translation, MP3/TXT/DOCX/PDF export, and a permanent recording history. That directly reversed
+        a prior decision in this document, and was confirmed explicitly rather than assumed: recordings and their
+        transcripts/translations are now <strong>kept permanently</strong> (not deleted after the request — see
+        <a href="#history">§8a</a> for the full detail).</p>
       </div>
     </header>
 
@@ -471,9 +483,9 @@
       <div class="card">
         <ol class="steps">
           <li>User records Urdu speech in the browser (or uploads an audio file, or types Urdu directly).</li>
-          <li>Audio is sent to the gateway, which forwards it to a local <strong>faster-whisper</strong> model forced to Urdu — the audio never leaves infrastructure you control.</li>
+          <li>Audio is sent to the gateway, which forwards it to the transcription service, which calls <strong>OpenAI's <code>whisper-1</code></strong> audio transcription endpoint forced to Urdu.</li>
           <li>The resulting Urdu text appears in an editable text area; the user can fix it before translating.</li>
-          <li>Clicking <strong>Translate to English</strong> sends the (possibly edited) Urdu text to a self-hosted <strong>Qwen2.5-Instruct</strong> model.</li>
+          <li>Clicking <strong>Translate to English</strong> sends the (possibly edited) Urdu text to the translation service, which calls <strong>OpenAI Chat Completions</strong> (default model <code>gpt-4o-mini</code>).</li>
           <li>The English translation appears in its own panel; Urdu and English can be copied independently, and editing the Urdu again marks the English stale.</li>
         </ol>
       </div>
@@ -482,10 +494,10 @@
       <table>
         <thead><tr><th>Constraint</th><th>Consequence</th></tr></thead>
         <tbody>
-          <tr><td>Zero third-party AI APIs</td><td>Both models run in-process on your own GPU(s); nothing in this app calls OpenAI/Anthropic/Google for anything — the previous OpenAI-backed <code>/speak</code> route was removed entirely as part of this revision.</td></tr>
-          <tr><td>Target GPU specs unknown</td><td>Model size, precision, quantization, batch size, and context length are all environment variables with tier-appropriate defaults — see <a href="#models">§6</a>.</td></tr>
+          <tr><td>Only OpenAI, only for these two features</td><td>Transcription and translation both call the OpenAI API; nothing in this app calls Anthropic/Google for anything — the unrelated OpenAI-backed <code>/speak</code> route was removed entirely in an earlier revision and stays removed. This is a deliberate architecture change from an earlier fully self-hosted, zero-third-party-API design (see the architecture update callout above).</td></tr>
+          <tr><td>No GPU, no model sizing</td><td>There is no local model to size — no VRAM tier, precision, or quantization choice. The only model knobs are <code>OPENAI_TRANSCRIBE_MODEL</code>/<code>OPENAI_MODEL</code> — see <a href="#models">§6</a>.</td></tr>
           <tr><td>Existing app must keep working</td><td>The gateway is the same Express process as before; <code>/health</code> is untouched, and a single flag (<code>ENABLE_AI_FEATURES=false</code>) fully disables the new feature.</td></tr>
-          <tr><td>Shared GPU, bursty traffic</td><td>Concurrency is bounded at three independent layers so a burst of requests degrades to a fast 503 instead of an out-of-memory crash — see <a href="#security">§5</a>.</td></tr>
+          <tr><td>Paid API, bursty traffic, rate limits</td><td>Concurrency is bounded at three independent layers so a burst of requests degrades to a fast 503 instead of hitting OpenAI's rate limits or running up unbounded cost — see <a href="#security">§5</a>.</td></tr>
         </tbody>
       </table>
     </section>
@@ -493,14 +505,14 @@
     <!-- 2. ARCHITECTURE -->
     <section id="architecture">
       <h2><span class="num">02</span> System architecture</h2>
-      <p class="section-intro">One public process, two private GPU services, one crossing point.</p>
+      <p class="section-intro">One public process, two private services that each call out to OpenAI, one crossing point.</p>
 
       <figure>
         <div class="diagram-frame">
-          <svg viewBox="0 0 760 410" role="img" aria-label="Browser talks over HTTPS to the Express gateway, which is the only component crossing the public/private boundary. The gateway forwards authenticated requests over the internal network to the transcription and translation services, each backed by a persistent model-cache volume.">
+          <svg viewBox="0 0 760 410" role="img" aria-label="Browser talks over HTTPS to the Express gateway, which is the only component crossing the public/private boundary. The gateway forwards authenticated requests over the internal network to the transcription and translation services, each of which in turn calls the OpenAI API over the internet on every request.">
             <text x="30" y="26" class="zone-label">public internet</text>
             <line x1="20" y1="140" x2="740" y2="140" class="lifeline"></line>
-            <text x="30" y="158" class="zone-label">private network — internal only</text>
+            <text x="30" y="158" class="zone-label">private network — internal only (each AI service still calls out to api.openai.com over HTTPS)</text>
 
             <rect class="box" x="290" y="46" width="180" height="54" rx="8"></rect>
             <text x="380" y="68" text-anchor="middle" class="box-title">Browser</text>
@@ -524,20 +536,20 @@
             <rect class="box" x="80" y="250" width="240" height="64" rx="8"></rect>
             <text x="200" y="272" text-anchor="middle" class="box-title">Transcription service</text>
             <text x="200" y="288" text-anchor="middle" class="lbl-sm">FastAPI · :8001</text>
-            <text x="200" y="302" text-anchor="middle" class="lbl-sm">faster-whisper, CUDA</text>
+            <text x="200" y="302" text-anchor="middle" class="lbl-sm">calls OpenAI whisper-1</text>
 
             <rect class="box" x="440" y="250" width="240" height="64" rx="8"></rect>
             <text x="560" y="272" text-anchor="middle" class="box-title">Translation service</text>
             <text x="560" y="288" text-anchor="middle" class="lbl-sm">FastAPI · :8002</text>
-            <text x="560" y="302" text-anchor="middle" class="lbl-sm">Qwen2.5-Instruct, CUDA</text>
+            <text x="560" y="302" text-anchor="middle" class="lbl-sm">calls OpenAI Chat Completions</text>
 
             <line x1="200" y1="314" x2="200" y2="350" class="msg" marker-end="url(#arrow)"></line>
             <rect class="box" x="110" y="350" width="180" height="40" rx="6"></rect>
-            <text x="200" y="374" text-anchor="middle" class="lbl-sm">model cache volume</text>
+            <text x="200" y="374" text-anchor="middle" class="lbl-sm">HTTPS to api.openai.com</text>
 
             <line x1="560" y1="314" x2="560" y2="350" class="msg" marker-end="url(#arrow)"></line>
             <rect class="box" x="470" y="350" width="180" height="40" rx="6"></rect>
-            <text x="560" y="374" text-anchor="middle" class="lbl-sm">model cache volume</text>
+            <text x="560" y="374" text-anchor="middle" class="lbl-sm">HTTPS to api.openai.com</text>
 
             <defs>
               <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -546,13 +558,14 @@
             </defs>
           </svg>
         </div>
-        <figcaption><strong>Fig. 1 — Topology.</strong> The gateway is the only component that straddles the public/private boundary — in production it sits behind an optional TLS-terminating reverse proxy (Caddy, §7) rather than taking browser HTTPS directly. Both AI services sit on an internal-only Docker network with no published port and require mutual TLS on every call, and each mounts a persistent volume so model weights are downloaded once, not per request.</figcaption>
+        <figcaption><strong>Fig. 1 — Topology.</strong> The gateway is the only component that straddles the public/private boundary — in production it sits behind an optional TLS-terminating reverse proxy (Caddy, §7) rather than taking browser HTTPS directly. Both AI services sit on an internal-only Docker network with no published port and require mutual TLS on every gateway↔service call, but each one in turn makes its own outbound HTTPS call to <code>api.openai.com</code> on every single transcribe/translate request — there is no model cache and no offline fallback.</figcaption>
       </figure>
 
       <p>
         This mirrors the app's existing shape — one Express process serving the UI and terminating client
-        requests — with two new internal collaborators instead of a rewrite. The gateway never loads an ML
-        framework; the Python services never see the public internet.
+        requests — with two new internal collaborators instead of a rewrite. The gateway never calls an AI API
+        directly; the Python services are never reachable from the public internet, but they do reach out to it
+        (to <code>api.openai.com</code>) on every request.
       </p>
     </section>
 
@@ -564,7 +577,7 @@
       <h3>Transcribe</h3>
       <figure>
         <div class="diagram-frame">
-          <svg viewBox="0 0 780 480" role="img" aria-label="Sequence diagram: browser posts audio to the gateway, which saves a temp file, forwards it to the transcription service, which saves its own temp file, runs faster-whisper, deletes its temp file, returns text, and the gateway deletes its own temp file before responding.">
+          <svg viewBox="0 0 780 480" role="img" aria-label="Sequence diagram: browser posts audio to the gateway, which saves a temp file, forwards it to the transcription service, which saves its own temp file, calls OpenAI's whisper-1 API, deletes its temp file, returns text, and the gateway deletes its own temp file before responding.">
             <text x="110" y="26" text-anchor="middle" class="box-title">Browser</text>
             <text x="380" y="26" text-anchor="middle" class="box-title">Gateway</text>
             <text x="650" y="26" text-anchor="middle" class="box-title">Transcription svc</text>
@@ -583,7 +596,7 @@
             <text x="515" y="157" text-anchor="middle" class="lbl-sm">POST /v1/transcribe · mTLS + Bearer token</text>
 
             <path d="M650,195 h55 v22 h-55" class="msg" marker-end="url(#arrow2)"></path>
-            <text x="600" y="238" text-anchor="middle" class="lbl-sm">mkstemp + faster-whisper.transcribe(language="ur")</text>
+            <text x="600" y="238" text-anchor="middle" class="lbl-sm">mkstemp + OpenAI audio.transcriptions.create(model="whisper-1", language="ur")</text>
 
             <path d="M650,255 h55 v22 h-55" class="msg" marker-end="url(#arrow2)"></path>
             <text x="710" y="290" class="lbl-sm">delete temp</text>
@@ -683,19 +696,19 @@
       </table>
 
       <h3 id="components-transcribe">Transcription service — <code>ai-services/transcription/</code></h3>
-      <p>FastAPI app around <a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper</a>. <code>model_backend.py</code> loads the model once at startup and is the only module that imports the (heavy) ML library, so unit tests can stub it entirely. Language is forced to <code>ur</code> rather than auto-detected, so a sentence with an occasional English word doesn't cause the decoder to switch languages mid-utterance.</p>
+      <p>FastAPI app around the <a href="https://platform.openai.com/docs/api-reference/audio">OpenAI audio transcription API</a> (<code>whisper-1</code> by default). <code>model_backend.py</code> creates the OpenAI client once at startup and is the only module that imports the <code>openai</code> package, so unit tests can stub it entirely without installing it. Language is forced to <code>ur</code> rather than auto-detected, so a sentence with an occasional English word doesn't cause the decoder to switch languages mid-utterance.</p>
       <div class="scroller">
         <pre><code><span class="c"># POST /v1/transcribe — abbreviated request lifecycle</span>
 verify_token(authorization)                    <span class="c"># 401 if Bearer mismatch</span>
 guard.try_acquire()                            <span class="c"># 503 if MAX_CONCURRENT_TRANSCRIPTIONS reached</span>
 validate content_type in ALLOWED_CONTENT_TYPES <span class="c"># 400 otherwise</span>
 stream to tempfile, enforcing MAX_AUDIO_UPLOAD_MB <span class="c"># 413 if exceeded</span>
-asyncio.to_thread(model_backend.transcribe_file, tmp_path)
+asyncio.to_thread(model_backend.transcribe_file, tmp_path)  <span class="c"># calls OpenAI's whisper-1 API</span>
 <span class="k">finally</span>: guard.release(); os.remove(tmp_path)</code></pre>
       </div>
 
       <h3 id="components-translate">Translation service — <code>ai-services/translation/</code></h3>
-      <p><code>model_backend.py</code> wraps a <code>transformers</code> chat model (Qwen2.5-Instruct by default). <code>prompt.py</code> builds the controlled system prompt and defends against instruction injection; <code>chunker.py</code> splits long input by structure. Generation is greedy (<code>DO_SAMPLE=false</code>) for deterministic, reproducible translations.</p>
+      <p><code>model_backend.py</code> wraps the OpenAI Chat Completions API (<code>gpt-4o-mini</code> by default, via <code>OPENAI_MODEL</code>). <code>prompt.py</code> builds the controlled system prompt and defends against instruction injection; <code>chunker.py</code> splits long input by structure. Generation is greedy (<code>DO_SAMPLE=false</code>, i.e. <code>temperature=0</code>) for deterministic, reproducible translations.</p>
       <div class="scroller">
         <pre><code><span class="c"># POST /v1/translate — abbreviated request lifecycle</span>
 verify_token(authorization); validate 0 &lt; len(text) &lt;= MAX_TRANSLATE_TEXT_LENGTH
@@ -728,11 +741,11 @@ END_MARKER   = <span class="k">"&lt;&lt;&lt;URDU_TEXT_END&gt;&gt;&gt;"</span>
     <!-- 5. SECURITY -->
     <section id="security">
       <h2><span class="num">05</span> Security model</h2>
-      <p class="section-intro">Eleven independent controls, each one narrowing what can reach the GPU.</p>
+      <p class="section-intro">Eleven independent controls, each one narrowing what can reach the OpenAI API call (and the billable request it triggers).</p>
 
       <figure>
         <div class="diagram-frame">
-          <svg viewBox="0 0 900 500" role="img" aria-label="A funnel diagram of eleven layered controls a request passes through, narrowing from the open internet at the top to the model at the bottom: TLS, security headers, CORS, rate limiting, optional API key, input validation, gateway concurrency guard, internal network isolation, service bearer token, per-service concurrency semaphore, and prompt-injection wrapping.">
+          <svg viewBox="0 0 900 500" role="img" aria-label="A funnel diagram of eleven layered controls a request passes through, narrowing from the open internet at the top to the OpenAI API call at the bottom: TLS, security headers, CORS, rate limiting, optional API key, input validation, gateway concurrency guard, internal network isolation, service bearer token, per-service concurrency semaphore, and prompt-injection wrapping.">
             <text x="480" y="30" text-anchor="middle" class="lbl" style="opacity:.7">request →</text>
 
             <polygon points="260,50 640,50 629,84 271,84" class="box"></polygon>
@@ -761,7 +774,7 @@ END_MARKER   = <span class="k">"&lt;&lt;&lt;URDU_TEXT_END&gt;&gt;&gt;"</span>
 
             <polygon points="326,278 574,278 563,312 337,312" class="box-accent"></polygon>
             <text x="20" y="300" class="lbl" style="color:var(--accent-ink)">Gateway concurrency guard</text>
-            <text x="655" y="300" class="lbl-sm" style="opacity:.75">mitigates: burst GPU overload</text>
+            <text x="655" y="300" class="lbl-sm" style="opacity:.75">mitigates: request bursts, runaway OpenAI cost</text>
 
             <polygon points="337,316 563,316 552,350 348,350" class="box"></polygon>
             <text x="20" y="338" class="lbl">Network isolation + mutual TLS</text>
@@ -772,88 +785,99 @@ END_MARKER   = <span class="k">"&lt;&lt;&lt;URDU_TEXT_END&gt;&gt;&gt;"</span>
             <text x="655" y="376" class="lbl-sm" style="opacity:.75">mitigates: unauthorized internal calls (after mTLS)</text>
 
             <polygon points="359,392 541,392 530,426 370,426" class="box-accent"></polygon>
-            <text x="20" y="414" class="lbl" style="color:var(--accent-ink)">Per-service GPU semaphore</text>
-            <text x="655" y="414" class="lbl-sm" style="opacity:.75">mitigates: CUDA out-of-memory</text>
+            <text x="20" y="414" class="lbl" style="color:var(--accent-ink)">Per-service concurrency semaphore</text>
+            <text x="655" y="414" class="lbl-sm" style="opacity:.75">mitigates: exceeding OpenAI's rate limits</text>
 
             <polygon points="370,430 530,430 520,462 380,462" class="box"></polygon>
             <text x="20" y="452" class="lbl">Prompt-injection wrapping</text>
             <text x="655" y="452" class="lbl-sm" style="opacity:.75">mitigates: instruction hijacking (translate only)</text>
 
-            <text x="450" y="486" text-anchor="middle" class="box-title">model</text>
+            <text x="450" y="486" text-anchor="middle" class="box-title">OpenAI API call</text>
           </svg>
         </div>
-        <figcaption><strong>Fig. 4 — Defense in depth.</strong> The two highlighted bands are the GPU-specific controls: a request can pass every upstream check and still be rejected purely because the GPU is already at its configured concurrency limit — a deliberate 503 instead of an out-of-memory crash.</figcaption>
+        <figcaption><strong>Fig. 4 — Defense in depth.</strong> The two highlighted bands are the concurrency-specific controls: a request can pass every upstream check and still be rejected purely because a service is already at its configured concurrency limit — a deliberate 503 instead of an OpenAI rate-limit (429) rejection or runaway per-request cost.</figcaption>
       </figure>
     </section>
 
     <!-- 6. MODELS -->
     <section id="models">
       <h2><span class="num">06</span> Model selection</h2>
-      <p class="section-intro">Chosen deliberately, not defaulted — with the rejected alternatives and why.</p>
+      <p class="section-intro">Chosen deliberately, not defaulted — including why OpenAI's hosted models were chosen over the self-hosted alternatives evaluated in earlier revisions.</p>
 
-      <h3>Transcription — faster-whisper</h3>
-      <p><a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper</a> (CTranslate2 backend) over vanilla <code>openai-whisper</code>: 2-4× faster inference at equal accuracy, lower memory, and — notably — <strong>no torch dependency</strong>, which keeps the service image small and startup fast.</p>
+      <h3>Transcription — OpenAI <code>whisper-1</code></h3>
+      <p><code>model_backend.py</code> calls the <a href="https://platform.openai.com/docs/api-reference/audio">OpenAI audio transcription API</a> instead of running a model in-process. <code>whisper-1</code> is used specifically — not the newer <code>gpt-4o-transcribe</code>/<code>gpt-4o-mini-transcribe</code> — because it is currently the only OpenAI transcription model that supports <code>response_format="verbose_json"</code>, which is what gives this service the detected <code>language</code> and audio <code>duration</code> fields it returns, not just the transcript text.</p>
       <div class="scroller">
         <table>
-          <thead><tr><th>GPU VRAM</th><th><code>WHISPER_MODEL_SIZE</code></th><th>Notes</th></tr></thead>
+          <thead><tr><th>Var</th><th>Default</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td>Low (4–6GB)</td><td><code>small</code></td><td>Fast, good enough for short clips</td></tr>
-            <tr><td>Medium (8–16GB)</td><td><code>medium</code> <span class="badge accent">default</span></td><td>Best accuracy/speed tradeoff for Urdu</td></tr>
-            <tr><td>High (24GB+)</td><td><code>large-v3</code></td><td>Best accuracy; needed for noisy or long-form audio</td></tr>
+            <tr><td><code>OPENAI_API_KEY</code></td><td><em>required</em></td><td>Shared with the translation service via one <code>.env</code> file</td></tr>
+            <tr><td><code>OPENAI_TRANSCRIBE_MODEL</code></td><td><code>whisper-1</code> <span class="badge accent">default</span></td><td>See above for why this model specifically</td></tr>
+            <tr><td><code>WHISPER_LANGUAGE</code></td><td><code>ur</code></td><td>Forced/default source language (ISO 639-1); kept as <code>WHISPER_*</code> since OpenAI's own hosted model here is still literally named "whisper-1"</td></tr>
           </tbody>
         </table>
       </div>
+      <p>There is no GPU, model-size, or VRAM configuration anymore — <code>whisper-1</code> runs entirely on OpenAI's infrastructure.</p>
 
-      <h3>Translation — Qwen2.5-Instruct</h3>
+      <h3>Translation — OpenAI Chat Completions (<code>gpt-4o-mini</code> default)</h3>
+      <p><code>model_backend.py</code> sends the constructed prompt to OpenAI's Chat Completions API instead of running a local <code>transformers</code> model. Default: <code>gpt-4o-mini</code>, a cost/latency-appropriate default for a constrained "translate only" prompt; override with <code>OPENAI_MODEL</code> for a higher-quality (and higher-cost) model such as <code>gpt-4o</code> if needed.</p>
+
+      <div class="callout" style="margin:14px 0">
+        <p><strong>Why OpenAI's hosted models instead of self-hosting (e.g. Qwen2.5-Instruct, as earlier revisions of this document evaluated):</strong> this was an explicit, deliberate architecture decision by the project owner, not a technical dead-end with the self-hosted approach. Self-hosting removed any per-request cost/rate-limit exposure and kept inference fully private, at the cost of requiring a GPU host, model downloads/caching, and a CUDA/torch/transformers dependency chain to keep patched. Calling OpenAI's API removes all of that operational burden (no GPU provisioning, no model weights to manage, smaller/simpler container images — see <a href="#gpu-deployment">§7</a>) in exchange for a live third-party dependency: every request now costs money, is subject to OpenAI's rate limits, and needs network egress and a valid API key to function at all.</p>
+      </div>
+
+      <p>The Cohere/Mistral/NLLB-style self-hosted-model comparison this section used to carry is superseded — kept below only as a historical record of what was evaluated before the OpenAI API migration, not as live guidance:</p>
       <div class="scroller">
         <table>
-          <caption>Considered candidates for Urdu→English translation</caption>
-          <thead><tr><th>Model</th><th>License</th><th>Commercial use</th><th>Verdict</th></tr></thead>
+          <caption>Historical — self-hosted candidates considered before the OpenAI API migration (superseded)</caption>
+          <thead><tr><th>Model</th><th>License</th><th>Commercial use</th><th>Verdict (at the time)</th></tr></thead>
           <tbody>
-            <tr><td><strong>Qwen2.5-Instruct</strong> (0.5B–72B)</td><td>Apache-2.0</td><td><span class="badge ok">Yes</span></td><td>Chosen. Urdu is in its pretraining mix; strong instruction-following for a constrained "translate only" prompt; one code path scales across all VRAM tiers.</td></tr>
+            <tr><td><strong>Qwen2.5-Instruct</strong> (0.5B–72B)</td><td>Apache-2.0</td><td><span class="badge ok">Yes</span></td><td>Was the chosen self-hosted model. Urdu was in its pretraining mix; strong instruction-following for a constrained "translate only" prompt. Since replaced by the OpenAI API (see callout above).</td></tr>
             <tr><td>Aya-23 (Cohere)</td><td>CC-BY-NC-4.0</td><td><span class="badge crit">No</span></td><td>Disqualified — non-commercial license.</td></tr>
             <tr><td>Aya-101 (Cohere)</td><td>Apache-2.0</td><td><span class="badge ok">Yes</span></td><td>Older mT5 encoder-decoder; weaker at following formatting/output-only constraints than a modern chat model.</td></tr>
             <tr><td>NLLB-200 (Meta)</td><td>CC-BY-NC-4.0</td><td><span class="badge crit">No</span></td><td>Disqualified — non-commercial license; also not instruction-steerable.</td></tr>
-            <tr><td>Mistral/Mixtral-Instruct</td><td>Apache-2.0</td><td><span class="badge ok">Yes</span></td><td>Commercially fine, but Urdu is not a training focus — reported ur→en quality trails Qwen2.5.</td></tr>
+            <tr><td>Mistral/Mixtral-Instruct</td><td>Apache-2.0</td><td><span class="badge ok">Yes</span></td><td>Commercially fine, but Urdu was not a training focus — reported ur→en quality trailed Qwen2.5.</td></tr>
           </tbody>
         </table>
       </div>
 
       <div class="scroller">
         <table>
-          <caption>VRAM-tiered configuration (all via env vars — no code change needed)</caption>
-          <thead><tr><th>GPU VRAM</th><th><code>TRANSLATION_MODEL_NAME</code></th><th><code>TRANSLATION_PRECISION</code></th></tr></thead>
+          <caption>Current configuration (all via env vars — no code change needed)</caption>
+          <thead><tr><th>Var</th><th>Default</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td>Low (6–8GB)</td><td>Qwen2.5-1.5B / 3B-Instruct</td><td><code>int4</code></td></tr>
-            <tr><td>Medium (12–16GB)</td><td>Qwen2.5-7B-Instruct <span class="badge accent">default</span></td><td><code>int4</code> (bitsandbytes nf4)</td></tr>
-            <tr><td>High (24GB+)</td><td>Qwen2.5-14B / 32B-Instruct</td><td><code>int8</code> / <code>bf16</code>, or AWQ/GPTQ checkpoints</td></tr>
+            <tr><td><code>OPENAI_API_KEY</code></td><td><em>required</em></td><td>Shared with the transcription service via one <code>.env</code> file</td></tr>
+            <tr><td><code>OPENAI_MODEL</code></td><td><code>gpt-4o-mini</code> <span class="badge accent">default</span></td><td>Any OpenAI chat-completions-capable model</td></tr>
+            <tr><td><code>MAX_INPUT_TOKENS_PER_CHUNK</code></td><td>700</td><td>Chunker's per-call budget — see Fig. 3</td></tr>
+            <tr><td><code>DO_SAMPLE</code> / <code>TEMPERATURE</code></td><td><code>false</code> / 0.1</td><td>Greedy (<code>temperature=0</code>) by default; deterministic and appropriate for translation</td></tr>
+            <tr><td><code>MAX_CONCURRENT_TRANSLATIONS</code></td><td>2</td><td>Now bounds concurrent outbound OpenAI requests, not a GPU semaphore</td></tr>
+            <tr><td><code>WARMUP_ON_STARTUP</code></td><td><code>false</code></td><td>Default flipped from the self-hosted era — warming up now sends a real, billable OpenAI request on every startup</td></tr>
           </tbody>
         </table>
       </div>
+      <p>There is no GPU, model-size, device, or precision configuration anymore — <code>TRANSLATION_DEVICE</code>, <code>TRANSLATION_PRECISION</code>, and <code>TRANSLATION_MODEL_NAME</code> no longer exist; <code>OPENAI_MODEL</code> replaces <code>TRANSLATION_MODEL_NAME</code>'s role.</p>
       <p class="callout">
-        <strong>Upgrade path:</strong> the API contract (<code>POST /v1/translate {text}</code> → <code>{translation}</code>) doesn't change if
-        <code>model_backend.py</code> is later swapped to serve from vLLM or TGI for higher-throughput production traffic —
-        only that one file's internals would change.
+        <strong>Upgrade path:</strong> the API contract (<code>POST /v1/translate {text}</code> → <code>{translation}</code>) is unchanged from the self-hosted design — swapping <code>OPENAI_MODEL</code>, or swapping the OpenAI client in
+        <code>model_backend.py</code> for a different provider's API entirely, would not require any change outside that file.
       </p>
     </section>
 
-    <!-- 7. GPU DEPLOYMENT -->
+    <!-- 7. DEPLOYMENT -->
     <section id="gpu-deployment">
-      <h2><span class="num">07</span> Implementing on GPU</h2>
-      <p class="section-intro">Two supported paths — Docker Compose (recommended) and native/bare-metal — plus how to confirm the GPU is actually being used.</p>
+      <h2><span class="num">07</span> Implementing with the OpenAI API</h2>
+      <p class="section-intro">Two supported paths — Docker Compose (recommended) and native/bare-metal — plus how to confirm the OpenAI API is actually being used. No GPU required anywhere in this section anymore (see the architecture update at the top of this document).</p>
 
       <figure>
         <div class="diagram-frame">
-          <svg viewBox="0 0 820 500" role="img" aria-label="Deployment topology: a reverse proxy terminates TLS outside the host and forwards to the gateway container. Gateway, transcription, and translation containers sit on an internal Docker bridge network on the GPU host. The transcription and translation containers each access the physical NVIDIA GPU through the NVIDIA driver and Container Toolkit.">
+          <svg viewBox="0 0 820 480" role="img" aria-label="Deployment topology: a reverse proxy terminates TLS outside the host and forwards to the gateway container. Gateway, transcription, and translation containers sit on an internal Docker bridge network on a plain general-purpose host. The transcription and translation containers each make outbound HTTPS calls to api.openai.com on every request.">
             <rect x="330" y="15" width="160" height="46" rx="8" class="box"></rect>
             <text x="410" y="43" text-anchor="middle" class="lbl">Reverse proxy (TLS) :443</text>
             <line x1="410" y1="61" x2="410" y2="150" class="msg" marker-end="url(#arrow5)"></line>
 
-            <rect x="20" y="90" width="780" height="380" rx="10" class="zone"></rect>
-            <text x="35" y="110" class="zone-label">GPU host (bare metal or VM with GPU passthrough)</text>
+            <rect x="20" y="90" width="780" height="350" rx="10" class="zone"></rect>
+            <text x="35" y="110" class="zone-label">General-purpose host (no GPU required)</text>
 
             <rect x="50" y="130" width="720" height="250" rx="8" class="zone"></rect>
-            <text x="65" y="150" class="zone-label">docker network: internal (bridge, not published)</text>
+            <text x="65" y="150" class="zone-label">docker network: internal (bridge, not published — still needs outbound HTTPS egress)</text>
 
             <rect x="330" y="160" width="160" height="56" rx="8" class="box-accent"></rect>
             <text x="410" y="183" text-anchor="middle" class="box-title">gateway</text>
@@ -866,22 +890,22 @@ END_MARKER   = <span class="k">"&lt;&lt;&lt;URDU_TEXT_END&gt;&gt;&gt;"</span>
 
             <rect x="90" y="300" width="220" height="66" rx="8" class="box"></rect>
             <text x="200" y="322" text-anchor="middle" class="box-title">transcription</text>
-            <text x="200" y="338" text-anchor="middle" class="lbl-sm">:8001 · faster-whisper</text>
-            <text x="200" y="353" text-anchor="middle" class="lbl-sm">mounts /models/whisper</text>
+            <text x="200" y="338" text-anchor="middle" class="lbl-sm">:8001 · calls OpenAI whisper-1</text>
+            <text x="200" y="353" text-anchor="middle" class="lbl-sm">python:3.12-slim, no GPU</text>
 
             <rect x="520" y="300" width="220" height="66" rx="8" class="box"></rect>
             <text x="630" y="322" text-anchor="middle" class="box-title">translation</text>
-            <text x="630" y="338" text-anchor="middle" class="lbl-sm">:8002 · Qwen2.5-Instruct</text>
-            <text x="630" y="353" text-anchor="middle" class="lbl-sm">mounts /models/translation</text>
+            <text x="630" y="338" text-anchor="middle" class="lbl-sm">:8002 · calls OpenAI Chat Completions</text>
+            <text x="630" y="353" text-anchor="middle" class="lbl-sm">python:3.12-slim, no GPU</text>
 
-            <line x1="220" y1="366" x2="340" y2="425" class="msg" marker-end="url(#arrow5)"></line>
-            <line x1="610" y1="366" x2="490" y2="425" class="msg" marker-end="url(#arrow5)"></line>
-            <text x="410" y="405" text-anchor="middle" class="lbl-sm" style="opacity:.75">nvidia-container-runtime</text>
+            <line x1="220" y1="366" x2="340" y2="410" class="msg" marker-end="url(#arrow5)"></line>
+            <line x1="610" y1="366" x2="490" y2="410" class="msg" marker-end="url(#arrow5)"></line>
+            <text x="410" y="395" text-anchor="middle" class="lbl-sm" style="opacity:.75">outbound HTTPS, every request</text>
 
-            <rect x="310" y="425" width="200" height="44" rx="8" class="box-accent"></rect>
-            <text x="410" y="452" text-anchor="middle" class="box-title">NVIDIA GPU</text>
+            <rect x="310" y="410" width="200" height="44" rx="8" class="box-accent"></rect>
+            <text x="410" y="437" text-anchor="middle" class="box-title">api.openai.com</text>
 
-            <text x="65" y="490" class="lbl-sm" style="opacity:.7">requires: NVIDIA driver + NVIDIA Container Toolkit installed on the host</text>
+            <text x="65" y="465" class="lbl-sm" style="opacity:.7">requires: OPENAI_API_KEY + outbound HTTPS egress on this host — no NVIDIA driver, no GPU</text>
                       <defs>
               <marker id="arrow5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
@@ -889,43 +913,23 @@ END_MARKER   = <span class="k">"&lt;&lt;&lt;URDU_TEXT_END&gt;&gt;&gt;"</span>
             </defs>
           </svg>
         </div>
-        <figcaption><strong>Fig. 5 — Deployment topology.</strong> The gateway's port is bound to loopback only; the reverse proxy shown here is the bundled Caddy service (<code>deploy/Caddyfile</code>, <code>--profile proxy</code>) providing automatic public HTTPS. Gateway↔AI-service calls are mutual TLS. The GPU is a host-level device shared by two containers through the NVIDIA Container Toolkit, each with its own concurrency semaphore so they can't starve each other of VRAM.</figcaption>
+        <figcaption><strong>Fig. 5 — Deployment topology.</strong> The gateway's port is bound to loopback only; the reverse proxy shown here is the bundled Caddy service (<code>deploy/Caddyfile</code>, <code>--profile proxy</code>) providing automatic public HTTPS. Gateway↔AI-service calls are mutual TLS. Both AI services are plain CPU containers — there is no physical device to share and no VRAM to starve — but each one depends on reaching <code>api.openai.com</code> for every single request, which is a harder always-on network requirement than the old self-hosted design's "internet once, to download model weights."</figcaption>
       </figure>
 
       <h3 id="gpu-prereq">Prerequisites</h3>
       <table>
         <thead><tr><th>Requirement</th><th>Why</th></tr></thead>
         <tbody>
-          <tr><td>NVIDIA driver matching your GPU (≥ 535 recommended)</td><td>Both services' Dockerfiles target CUDA 12.4</td></tr>
           <tr><td>Docker Engine + Compose v2</td><td>Runs <code>docker-compose.yml</code></td></tr>
-          <tr><td><a href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html">NVIDIA Container Toolkit</a></td><td>Lets containers see <code>/dev/nvidia*</code> and CUDA libraries</td></tr>
-          <tr><td>~15GB free disk under the model cache path</td><td>Whisper <code>medium</code> (~1.5GB) + Qwen2.5-7B in 4-bit (~5GB) plus headroom for a larger tier later</td></tr>
+          <tr><td>A valid <code>OPENAI_API_KEY</code></td><td>Both AI services fail their <code>/ready</code> check without it — no local-model fallback exists</td></tr>
+          <tr><td>Outbound HTTPS egress to <code>api.openai.com</code>, on every request (not just at startup)</td><td>Both AI services call the OpenAI API for every transcribe/translate request</td></tr>
           <tr><td>OpenSSL</td><td>Used by <code>scripts/generate-internal-certs.sh</code> to generate the internal mTLS certs (§2 below) — no external CA/dependency needed</td></tr>
         </tbody>
       </table>
+      <p><strong>No longer needed:</strong> an NVIDIA driver, the NVIDIA Container Toolkit, and free disk space for a model cache — none of that applies anymore, since neither AI service runs a local model. Both Dockerfiles are plain <code>python:3.12-slim</code> images with no CUDA/torch/transformers/bitsandbytes/faster-whisper/ctranslate2 dependencies.</p>
 
       <h3 id="gpu-compose">Path A — Docker Compose (recommended)</h3>
       <ol class="steps">
-        <li>
-          <strong>Install the NVIDIA Container Toolkit</strong> on the GPU host (Ubuntu example):
-          <div class="scroller">
-            <pre><code>curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker</code></pre>
-          </div>
-        </li>
-        <li>
-          <strong>Confirm Docker can see the GPU</strong> before touching this app:
-          <div class="scroller">
-            <pre><code>docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi</code></pre>
-          </div>
-          You should see your GPU listed. If this fails, stop here — the app-level steps below can't work until this does.
-        </li>
         <li>
           <strong>Configure the environment</strong>:
           <div class="scroller">
@@ -933,8 +937,8 @@ sudo systemctl restart docker</code></pre>
 cp .env.example .env
 <span class="c"># set a real INTERNAL_SERVICE_TOKEN, e.g.:</span>
 openssl rand -hex 32   <span class="c"># paste the output into INTERNAL_SERVICE_TOKEN=</span>
-<span class="c"># pick WHISPER_MODEL_SIZE / TRANSLATION_MODEL_NAME / TRANSLATION_PRECISION</span>
-<span class="c"># for your GPU's VRAM tier — see §6 tables above</span></code></pre>
+<span class="c"># set a real OPENAI_API_KEY — both AI services fail /ready without one</span>
+<span class="c"># optionally override OPENAI_TRANSCRIBE_MODEL / OPENAI_MODEL — see §6</span></code></pre>
           </div>
         </li>
         <li>
@@ -948,12 +952,13 @@ openssl rand -hex 32   <span class="c"># paste the output into INTERNAL_SERVICE_
           <div class="scroller">
             <pre><code>docker compose build
 docker compose up -d
-docker compose ps       <span class="c"># all three services should show "healthy" once models finish loading</span></code></pre>
+docker compose ps       <span class="c"># all three services should show "healthy" within seconds — no model to load</span></code></pre>
           </div>
           <div class="callout">
-            <p>First startup is slow: the translation container downloads Qwen2.5-7B's weights (several GB) into the
-            <code>translation-model-cache</code> volume the first time only. Watch progress with
-            <code>docker compose logs -f translation</code>. Subsequent restarts reuse the cached weights and start in seconds.</p>
+            <p>Startup is fast: there are no model weights to download or load. Both AI containers just need
+            <code>OPENAI_API_KEY</code> to create an OpenAI client at startup — watch
+            <code>docker compose logs -f transcription translation</code> for <code>openai_client_ready</code>
+            (or <code>model_load_failed</code> if the key is missing/invalid).</p>
           </div>
         </li>
         <li>
@@ -976,7 +981,7 @@ docker compose ps       <span class="c"># all three services should show "health
       </ol>
 
       <h3 id="gpu-native">Path B — Native / bare-metal (no Docker)</h3>
-      <p>Useful for a single dedicated GPU box, or while iterating on the Python services directly.</p>
+      <p>Useful while iterating on the Python services directly — any machine works, GPU or not.</p>
       <div class="scroller">
         <pre><code><span class="c"># 1) Gateway</span>
 cd server
@@ -986,27 +991,25 @@ npm start                                     <span class="c"># :3000</span>
 <span class="c"># 2) Transcription service (separate shell)</span>
 cd server/ai-services/transcription
 python -m venv .venv &amp;&amp; source .venv/bin/activate
-pip install -r requirements.txt               <span class="c"># faster-whisper needs no separate torch install</span>
+pip install -r requirements.txt               <span class="c"># just fastapi/uvicorn/openai — no torch, no GPU wheel</span>
 uvicorn app:app --host 0.0.0.0 --port 8001
 
 <span class="c"># 3) Translation service (separate shell)</span>
 cd server/ai-services/translation
 python -m venv .venv &amp;&amp; source .venv/bin/activate
-<span class="c"># install the CUDA build of torch that matches your driver FIRST:</span>
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt
+pip install -r requirements.txt               <span class="c"># fastapi/uvicorn/openai/tiktoken — no torch, no GPU wheel</span>
 uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
       </div>
-      <p>Set <code>TRANSCRIPTION_SERVICE_URL=http://localhost:8001</code> and <code>TRANSLATION_SERVICE_URL=http://localhost:8002</code> in the gateway's <code>.env</code> (these are already the defaults).</p>
+      <p>Set <code>TRANSCRIPTION_SERVICE_URL=http://localhost:8001</code> and <code>TRANSLATION_SERVICE_URL=http://localhost:8002</code> in the gateway's <code>.env</code> (these are already the defaults). Set <code>OPENAI_API_KEY</code> for both AI service processes.</p>
 
-      <h3 id="gpu-verify">Verifying the GPU is actually being used</h3>
+      <h3 id="gpu-verify">Verifying the OpenAI API is actually being used</h3>
       <table>
         <thead><tr><th>Check</th><th>Expected result</th></tr></thead>
         <tbody>
-          <tr><td><code>nvidia-smi</code> on the host while a request is in flight</td><td>A python process appears under <em>Processes</em> with non-zero memory</td></tr>
-          <tr><td>Transcription service startup log</td><td><code>loading_whisper_model</code> event with <code>"device": "cuda"</code></td></tr>
-          <tr><td>Translation service startup log</td><td><code>loading_translation_model</code> event with <code>"device": "cuda", "precision": "int4"</code></td></tr>
-          <tr><td><code>WHISPER_DEVICE</code> / <code>TRANSLATION_DEVICE</code> left as <code>auto</code></td><td>Falls back to CPU silently if CUDA isn't visible — check the logs above to be sure it didn't</td></tr>
+          <tr><td>Transcription service startup log</td><td><code>creating_openai_client</code> / <code>openai_client_ready</code> events, with <code>model: "whisper-1"</code> (or your <code>OPENAI_TRANSCRIBE_MODEL</code>)</td></tr>
+          <tr><td>Translation service startup log</td><td><code>creating_openai_client</code> / <code>openai_client_ready</code> events, with <code>model: "gpt-4o-mini"</code> (or your <code>OPENAI_MODEL</code>)</td></tr>
+          <tr><td>A transcribe/translate request while <code>OPENAI_API_KEY</code> is unset or invalid</td><td><code>/ready</code> reports the affected service as not ready (permanent 503 until a valid key is supplied); no silent local fallback exists</td></tr>
+          <tr><td>Network capture (e.g. <code>tcpdump</code>) on the AI service container during a request</td><td>An outbound HTTPS connection to <code>api.openai.com</code>, not just internal gateway↔service traffic</td></tr>
         </tbody>
       </table>
 
@@ -1015,11 +1018,11 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         <table>
           <thead><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr></thead>
           <tbody>
-            <tr><td><code>docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]]</code></td><td>NVIDIA Container Toolkit not installed/configured</td><td>Re-run Path A step 1; confirm with the <code>nvidia-smi</code> container test</td></tr>
-            <tr><td>Translation service logs <code>CUDA out of memory</code> at startup</td><td>Model + precision too large for the GPU</td><td>Drop to a smaller model (<code>Qwen2.5-3B-Instruct</code>) or a lower-memory precision (<code>int4</code>)</td></tr>
-            <tr><td>503 <code>"...is busy, please try again shortly"</code> under moderate load</td><td>Working as designed — the concurrency guard is protecting VRAM</td><td>Raise <code>MAX_CONCURRENT_TRANSCRIPTIONS</code> / <code>MAX_CONCURRENT_TRANSLATIONS</code> only if VRAM headroom actually allows it</td></tr>
-            <tr><td>First translation request after startup is very slow</td><td>Expected — model weights are loading/warming up</td><td><code>WARMUP_ON_STARTUP=true</code> (default) runs one throwaway generation at boot so the <em>first real user request</em> isn't the slow one</td></tr>
-            <tr><td>Devices load, but <code>device: "cpu"</code> in the logs</td><td><code>ctranslate2</code>/<code>torch</code> installed without CUDA support, or driver mismatch</td><td>Reinstall following the exact commands in Path B step 3, matching your driver's CUDA version</td></tr>
+            <tr><td>Either AI service's <code>/ready</code> reports not ready, logs <code>model_load_failed</code> with <code>RuntimeError: OPENAI_API_KEY is not set</code></td><td><code>OPENAI_API_KEY</code> missing or empty in <code>.env</code></td><td>Set a real key and restart the affected container(s)</td></tr>
+            <tr><td>Requests fail with an OpenAI authentication error</td><td><code>OPENAI_API_KEY</code> is set but invalid/revoked</td><td>Generate a new key on the OpenAI platform and update <code>.env</code></td></tr>
+            <tr><td>503 <code>"...is busy, please try again shortly"</code> under moderate load</td><td>Working as designed — the concurrency guard is protecting against exceeding OpenAI's rate limits / runaway cost, not GPU memory</td><td>Raise <code>MAX_CONCURRENT_TRANSCRIPTIONS</code> / <code>MAX_CONCURRENT_TRANSLATIONS</code> only if your OpenAI account's rate-limit tier actually allows it</td></tr>
+            <tr><td>Requests intermittently fail with a rate-limit (429) error from OpenAI</td><td>Traffic is exceeding the account's current OpenAI rate-limit tier</td><td>Lower <code>MAX_CONCURRENT_TRANSCRIPTIONS</code>/<code>MAX_CONCURRENT_TRANSLATIONS</code> (and the gateway-side concurrency caps), or request a higher tier from OpenAI</td></tr>
+            <tr><td>Transcribe/translate requests time out or fail with a connection error</td><td>The AI service container can't reach <code>api.openai.com</code> — outbound HTTPS egress is blocked on this host/network</td><td>Confirm the host/network allows outbound HTTPS to <code>api.openai.com</code>; the <code>internal</code> Docker network is intentionally not set to <code>internal: true</code> for this reason (see <code>docker-compose.yml</code>)</td></tr>
             <tr><td>Gateway logs <code>INTERNAL_TLS_ENABLED=true requires ... to all be set</code> and exits immediately</td><td>Certs not generated, or the env var paths don't match where they're mounted</td><td>Run <code>./scripts/generate-internal-certs.sh</code> before <code>docker compose up</code>; confirm the <code>./certs:/certs:ro</code> mount is present</td></tr>
             <tr><td>An AI service's TLS handshake fails / connection reset from the gateway</td><td>Certs regenerated on one side only, or a stale cached <code>https.Agent</code> from an old process</td><td>Regenerate <em>all</em> certs together (the script always rotates the full set) and restart all three containers, not just one</td></tr>
             <tr><td>Caddy never gets a trusted public certificate</td><td><code>PUBLIC_DOMAIN</code> unset (defaults to <code>localhost</code>), or DNS doesn't yet point at this host</td><td>Set <code>PUBLIC_DOMAIN</code> to a real domain whose A/AAAA record already resolves to this host, then retry</td></tr>
@@ -1041,7 +1044,7 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
             <tr><td><code>INTERNAL_SERVICE_TOKEN</code></td><td>no default</td><td>Shared bearer secret with both AI services — generate with <code>openssl rand -hex 32</code></td></tr>
             <tr><td><code>ALLOWED_ORIGINS</code></td><td>empty</td><td>Comma-separated cross-origin allow-list; empty = same-origin only</td></tr>
             <tr><td><code>REQUIRE_CLIENT_API_KEY</code> / <code>CLIENT_API_KEY</code></td><td>off</td><td>Lock the public endpoints down for an internal/enterprise deployment</td></tr>
-            <tr><td><code>MAX_AUDIO_UPLOAD_MB</code> / <code>MAX_TRANSLATE_TEXT_LENGTH</code></td><td>100 / 20000</td><td>Hard input caps enforced before any GPU work starts</td></tr>
+            <tr><td><code>MAX_AUDIO_UPLOAD_MB</code> / <code>MAX_TRANSLATE_TEXT_LENGTH</code></td><td>100 / 20000</td><td>Hard input caps enforced before any OpenAI API call is made</td></tr>
             <tr><td><code>MAX_CONCURRENT_TRANSCRIBE_REQUESTS</code> / <code>_TRANSLATE_REQUESTS</code></td><td>4 / 8</td><td>Gateway-side admission control (defense in depth)</td></tr>
           </tbody>
         </table>
@@ -1050,9 +1053,10 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         <table>
           <caption>Transcription service</caption>
           <tbody>
-            <tr><td><code>WHISPER_MODEL_SIZE</code></td><td><code>medium</code></td><td><code>tiny</code> · <code>base</code> · <code>small</code> · <code>medium</code> · <code>large-v3</code></td></tr>
-            <tr><td><code>WHISPER_DEVICE</code> / <code>WHISPER_COMPUTE_TYPE</code></td><td><code>auto</code></td><td>Resolves to CUDA/float16 if available, else CPU/int8</td></tr>
-            <tr><td><code>MAX_CONCURRENT_TRANSCRIPTIONS</code></td><td>2</td><td>Per-service GPU semaphore</td></tr>
+            <tr><td><code>OPENAI_API_KEY</code></td><td><em>required</em></td><td>Missing/invalid key fails <code>/ready</code> permanently</td></tr>
+            <tr><td><code>OPENAI_TRANSCRIBE_MODEL</code></td><td><code>whisper-1</code></td><td>Only OpenAI transcription model supporting <code>response_format="verbose_json"</code> (needed for detected-language + duration)</td></tr>
+            <tr><td><code>WHISPER_LANGUAGE</code></td><td><code>ur</code></td><td>Forced/default source language (ISO 639-1)</td></tr>
+            <tr><td><code>MAX_CONCURRENT_TRANSCRIPTIONS</code></td><td>2</td><td>Bounds concurrent outbound OpenAI requests</td></tr>
           </tbody>
         </table>
       </div>
@@ -1060,11 +1064,12 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         <table>
           <caption>Translation service</caption>
           <tbody>
-            <tr><td><code>TRANSLATION_MODEL_NAME</code></td><td><code>Qwen/Qwen2.5-7B-Instruct</code></td><td>Any Qwen2.5-Instruct size, or another commercially-licensed chat model</td></tr>
-            <tr><td><code>TRANSLATION_PRECISION</code></td><td><code>auto</code></td><td>Resolves to <code>int4</code> on CUDA, <code>fp32</code> on CPU</td></tr>
+            <tr><td><code>OPENAI_API_KEY</code></td><td><em>required</em></td><td>Missing/invalid key fails <code>/ready</code> permanently</td></tr>
+            <tr><td><code>OPENAI_MODEL</code></td><td><code>gpt-4o-mini</code></td><td>Any OpenAI chat-completions-capable model</td></tr>
             <tr><td><code>MAX_INPUT_TOKENS_PER_CHUNK</code></td><td>700</td><td>Chunker's per-call budget — see Fig. 3</td></tr>
             <tr><td><code>DO_SAMPLE</code> / <code>TEMPERATURE</code></td><td><code>false</code> / 0.1</td><td>Greedy decoding by default; deterministic and appropriate for translation</td></tr>
-            <tr><td><code>MAX_CONCURRENT_TRANSLATIONS</code></td><td>2</td><td>Per-service GPU semaphore</td></tr>
+            <tr><td><code>MAX_CONCURRENT_TRANSLATIONS</code></td><td>2</td><td>Bounds concurrent outbound OpenAI requests</td></tr>
+            <tr><td><code>WARMUP_ON_STARTUP</code></td><td><code>false</code></td><td>Off by default — warming up now means a real, billable OpenAI request on every startup</td></tr>
           </tbody>
         </table>
       </div>
@@ -1100,14 +1105,6 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
 
       <h3 class="sub">Frontend additions</h3>
       <p>Create/History tabs; a drag-and-drop zone alongside the existing file picker; pause/resume on the recorder with a live canvas level meter (Web Audio API <code>AnalyserNode</code>); source/target language dropdowns; a History dashboard with search, status/source-type filters, pagination, a detail panel with inline audio playback, and per-recording export/delete.</p>
-
-      <h3 class="sub">Google Cloud — hosting only, not an AI dependency</h3>
-      <p>The requirements document named "Google Cloud" and mentioned Google Speech-to-Text as an example. The
-      explicit decision made for this project: Google Cloud is used strictly as a <strong>GPU VM host</strong> for
-      this same Docker Compose stack (T4/A100/L4 shapes, Deep Learning VM images, persistent disks for the named
-      volumes) — <strong>no Google AI/Speech API is integrated anywhere</strong>, preserving the "fully self-hosted,
-      no third-party inference" constraint from <a href="#overview">§1</a>. This has not been deployed or verified
-      against a real GCP project in this environment — see <a href="#appendix">§12</a>.</p>
     </section>
 
     <!-- 9. PRIVACY -->
@@ -1125,7 +1122,7 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
             <li>Converted MP3 audio — kept permanently in <code>recordings/</code> (a Docker named volume in Compose) until deleted by the user or pruned by <code>RECORDINGS_RETENTION_DAYS</code></li>
             <li>Transcription/translation text and metadata — kept in the SQLite DB at <code>data/app.db</code>, same lifecycle as the audio</li>
             <li>The original multipart upload in <code>uploads/</code> is still transient — deleted once conversion to MP3 succeeds or fails</li>
-            <li>Anything used for model training — still nothing; both models are frozen, pre-trained checkpoints run purely for inference</li>
+            <li>This application does not fine-tune or train any model — audio and text are sent to OpenAI purely for one-shot inference per request. Whether OpenAI itself retains or uses API request content is governed by <a href="https://openai.com/enterprise-privacy/">OpenAI's own API data usage policy</a>, not by this application; by default OpenAI does not use API content to train its models, but this is a third-party policy this project does not control, unlike the fully self-hosted design described in earlier revisions of this document</li>
           </ul>
         </div>
         <div class="card">
@@ -1136,6 +1133,12 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
             <li>Verified by <code>tests/logger.test.js</code> and <code>tests/privacyLogging.test.js</code></li>
           </ul>
         </div>
+      </div>
+      <div class="callout" style="margin-top:16px">
+        <p><strong>Narrower privacy boundary than the original self-hosted design:</strong> audio and text content now
+        reaches OpenAI's infrastructure on every transcribe/translate request, over HTTPS, in addition to staying
+        within this application's own Docker network for the gateway↔AI-service leg (mutual TLS, §5). This is a
+        direct consequence of the OpenAI API migration described at the top of this document.</p>
       </div>
     </section>
 
@@ -1149,11 +1152,11 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         </div>
         <div class="card">
           <span class="eyebrow">Python</span>
-          <p style="margin:8px 0 0"><strong>55 tests</strong> (2 more skipped by design), pytest, <code>model_backend</code> stubbed so torch/faster-whisper never need installing for unit tests. Covers chunking (including the word-level fallback for punctuation-free oversized text), prompt-injection defense, concurrency semaphores, per-request language overrides, and dynamic language-pair prompt construction.</p>
+          <p style="margin:8px 0 0"><strong>55 tests</strong> (2 more skipped by design), pytest, <code>model_backend</code> stubbed so the <code>openai</code> package never needs installing for unit tests. Covers chunking (including the word-level fallback for punctuation-free oversized text), prompt-injection defense, concurrency semaphores, per-request language overrides, and dynamic language-pair prompt construction.</p>
         </div>
         <div class="card">
           <span class="eyebrow">Integration</span>
-          <p style="margin:8px 0 0">Gated behind <code>RUN_GPU_INTEGRATION_TESTS=1</code> — run these against the real models once deployed on GPU hardware: <code>npm run test:integration</code>.</p>
+          <p style="margin:8px 0 0">Gated behind <code>RUN_OPENAI_INTEGRATION_TESTS=1</code> (renamed from <code>RUN_GPU_INTEGRATION_TESTS</code> as part of the OpenAI API migration) — run these against the real services, and through them the real OpenAI API, with a valid <code>OPENAI_API_KEY</code>: <code>npm run test:integration</code>.</p>
         </div>
       </div>
     </section>
@@ -1163,7 +1166,7 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
       <h2><span class="num">11</span> File structure</h2>
       <div class="scroller">
         <pre><code>server/
-├── serve.js                      <span class="c"># gateway entrypoint (no external AI calls anywhere)</span>
+├── serve.js                      <span class="c"># gateway entrypoint (calls the two AI services internally; never calls OpenAI directly itself)</span>
 ├── lib/                          <span class="c"># config, logger, requestId, serviceClient (mTLS), concurrencyGuard, rateLimiters,</span>
 │                                  <span class="c"># db, recordingsRepo, audioStorage, exporters</span>
 ├── middleware/                   <span class="c"># auth, errorHandler</span>
@@ -1172,17 +1175,17 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
 ├── assets/fonts/                 <span class="c"># NotoNaskhArabic-Regular.ttf (embedded PDF export font)</span>
 ├── data/                         <span class="c"># SQLite DB (gitignored, Docker named volume)</span>
 ├── recordings/                   <span class="c"># permanent MP3 store (gitignored, Docker named volume)</span>
-├── tests/                        <span class="c"># 79 Jest tests + tests/integration/ (gated)</span>
+├── tests/                        <span class="c"># Jest tests + tests/integration/ (gated behind RUN_OPENAI_INTEGRATION_TESTS)</span>
 ├── scripts/generate-internal-certs.sh   <span class="c"># internal CA + mTLS certs</span>
 ├── deploy/Caddyfile               <span class="c"># optional public HTTPS reverse proxy</span>
 ├── ai-services/
-│   ├── transcription/            <span class="c"># FastAPI + faster-whisper, :8001, mTLS server</span>
+│   ├── transcription/            <span class="c"># FastAPI, :8001, mTLS server — calls OpenAI's whisper-1 API</span>
 │   │   ├── app.py, model_backend.py, config.py, concurrency.py, logging_utils.py
-│   │   ├── requirements.txt, requirements-dev.txt, Dockerfile, healthcheck.sh
+│   │   ├── requirements.txt, requirements-dev.txt, Dockerfile (python:3.12-slim), healthcheck.sh
 │   │   └── tests/
-│   └── translation/               <span class="c"># FastAPI + transformers, :8002, mTLS server</span>
+│   └── translation/               <span class="c"># FastAPI, :8002, mTLS server — calls OpenAI Chat Completions</span>
 │       ├── app.py, model_backend.py, prompt.py, chunker.py, config.py, concurrency.py, logging_utils.py
-│       ├── requirements.txt, requirements-dev.txt, Dockerfile, healthcheck.sh
+│       ├── requirements.txt, requirements-dev.txt, Dockerfile (python:3.12-slim), healthcheck.sh
 │       └── tests/
 ├── Dockerfile                    <span class="c"># gateway image</span>
 ├── docker-compose.yml            <span class="c"># all three services + optional reverse-proxy, mTLS wiring, persistent volumes</span>
@@ -1196,14 +1199,15 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
       <h2><span class="num">12</span> Rollback, monitoring &amp; QA</h2>
 
       <h3 class="sub">Rollback</h3>
-      <p>This was almost entirely an additive change — the one deliberate removal was the OpenAI-backed <code>/speak</code> route (see the compliance note below), a requested fix, not a regression. Fastest rollback of the rest: set <code>ENABLE_AI_FEATURES=false</code> and restart the gateway; the new routes return <code>503</code> immediately while <code>/health</code> and the static UI keep working. Full rollback: stop the <code>transcription</code>/<code>translation</code> containers, or redeploy the gateway from before this change.</p>
+      <p>This was almost entirely an additive change — the one deliberate removal was the OpenAI-backed <code>/speak</code> route (see the compliance note above), a requested fix, not a regression, and unrelated to the later OpenAI API migration (transcription/translation now use OpenAI, but <code>/speak</code> stays removed). Fastest rollback of the rest: set <code>ENABLE_AI_FEATURES=false</code> and restart the gateway; the new routes return <code>503</code> immediately while <code>/health</code> and the static UI keep working. Full rollback: stop the <code>transcription</code>/<code>translation</code> containers, or redeploy the gateway from before this change.</p>
 
       <h3 class="sub">Monitoring</h3>
       <ul>
-        <li><code>nvidia-smi</code> / DCGM exporter on the GPU host for VRAM and utilization</li>
-        <li>Docker healthchecks already wired to each service's <code>/health</code> and <code>/ready</code> (mTLS-aware — <code>healthcheck.sh</code>)</li>
-        <li>Alert on sustained <code>ai_service_error</code> / 503 rates in gateway logs (GPU saturation or a crashed model process)</li>
-        <li>Track <code>transcription_completed.duration_ms</code> and <code>translation_completed.duration_ms</code> as separate latency series</li>
+        <li>No GPU/VRAM metric to monitor anymore — both AI service containers are plain CPU containers that just make outbound HTTPS calls to OpenAI</li>
+        <li>Docker healthchecks already wired to each service's <code>/health</code> and <code>/ready</code> (mTLS-aware — <code>healthcheck.sh</code>); <code>/ready</code> reflects whether the OpenAI client was created successfully (i.e. <code>OPENAI_API_KEY</code> was present)</li>
+        <li>Alert on sustained <code>ai_service_error</code> / 503 rates in gateway logs (now an OpenAI API error/timeout/rate-limit rejection, or a network egress problem reaching <code>api.openai.com</code>, rather than GPU saturation or a crashed local model process)</li>
+        <li><strong>New operational concern vs. the self-hosted design:</strong> track OpenAI spend/usage via the OpenAI dashboard or usage API for the project's key, and alert on sustained <code>429</code>s surfacing as <code>ai_service_error</code> — that means traffic is exceeding the account's current OpenAI rate-limit tier</li>
+        <li>Track <code>transcription_completed.duration_ms</code> and <code>translation_completed.duration_ms</code> as separate latency series (now largely reflecting OpenAI API latency plus network round-trip, not local inference time)</li>
         <li>Alert on internal mTLS cert expiry — <code>scripts/generate-internal-certs.sh</code> has no automated renewal (825-day default validity)</li>
         <li>Alert on disk usage for the <code>gateway-data</code>/<code>gateway-recordings</code> volumes — with <code>RECORDINGS_RETENTION_DAYS=0</code> (the default) they grow unbounded</li>
       </ul>
@@ -1213,22 +1217,22 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
         <li>No per-user authentication/ownership on recording history yet — anyone with API access sees all recordings; add auth before a multi-tenant deployment</li>
         <li><code>better-sqlite3</code>/ffmpeg compatibility with the Alpine (musl) gateway image was verified by reading the packages' prebuilt-binary source logic, not by actually running <code>docker build</code> — Docker Desktop's daemon was unavailable in this sandbox</li>
         <li>Retention pruning (<code>RECORDINGS_RETENTION_DAYS</code>) is unit-tested but not exercised against real aged production data</li>
-        <li>Google Cloud hosting (see <a href="#history">§8a</a>) has not been deployed or tested against a real GCP project — the guidance is deployment instructions, not a verified deployment</li>
+        <li>Not verified end-to-end against the real OpenAI API in this environment — no live <code>OPENAI_API_KEY</code> was exercised here; see the test report for exactly what was and wasn't run</li>
       </ul>
 
-      <h3 class="sub">Performance targets (not yet measured — no production GPU access)</h3>
+      <h3 class="sub">Performance, cost &amp; rate limits (not yet measured — no live OpenAI API access in this environment)</h3>
       <div class="scroller">
         <table>
           <thead><tr><th>Scenario</th><th>Target</th></tr></thead>
           <tbody>
             <tr><td>Short sentence translation</td><td>95% within 5s</td></tr>
             <tr><td>Medium paragraph translation</td><td>95% within 10s</td></tr>
-            <tr><td>Transcription</td><td>95% within an agreed multiple of audio duration</td></tr>
-            <tr><td>Concurrent users</td><td>Load-test at expected production concurrency once the real GPU is known</td></tr>
+            <tr><td>Transcription</td><td>95% within an agreed multiple of audio duration (network + OpenAI processing time)</td></tr>
+            <tr><td>Concurrent users</td><td>Load-test at expected production concurrency; tune concurrency caps against OpenAI's account-level rate limits, not GPU throughput</td></tr>
           </tbody>
         </table>
       </div>
-      <p>These are targets to benchmark against, not measured results — see the compliance note above. Full table in <code>docs/AI_FEATURE.md</code> §6.</p>
+      <p>These are targets to benchmark against, not measured results. Cost and rate-limiting are now a real operational concern that didn't exist under the self-hosted design — every request is a paid OpenAI API call, see the monitoring notes above. Full table in <code>docs/AI_FEATURE.md</code> §6.</p>
 
       <h3 class="sub">QA sample set (Urdu → English)</h3>
       <p>Shown here as the original representative set; the app now accepts any of ~22 language pairs (§8a) and the
@@ -1249,7 +1253,7 @@ uvicorn app:app --host 0.0.0.0 --port 8002</code></pre>
     </section>
 
     <footer class="doc-footer">
-      Urdu Voice Pipeline — architecture &amp; GPU deployment reference. Source of truth is <code>server/docs/AI_FEATURE.md</code> in the repository; this page is a shareable rendering of the same material.
+      Urdu Voice Pipeline — architecture &amp; deployment reference (OpenAI API-backed). Source of truth is <code>server/docs/AI_FEATURE.md</code> in the repository; this page is a shareable rendering of the same material.
     </footer>
   </main>
 </div>

@@ -1,14 +1,15 @@
-// Integration test against the REAL transcription service + REAL Whisper
-// model. Skipped by default; requires RUN_GPU_INTEGRATION_TESTS=1, a real
-// running transcription service, and a sample Urdu audio file at the path
-// given by SAMPLE_URDU_AUDIO_PATH.
+// Integration test against the REAL transcription service + REAL OpenAI
+// audio API. Skipped by default; requires RUN_OPENAI_INTEGRATION_TESTS=1, a
+// real running transcription service configured with a valid
+// OPENAI_API_KEY, and a sample Urdu audio file at the path given by
+// SAMPLE_URDU_AUDIO_PATH.
 const path = require("path");
 const fs = require("fs");
 
-const runIntegration = process.env.RUN_GPU_INTEGRATION_TESTS === "1";
+const runIntegration = process.env.RUN_OPENAI_INTEGRATION_TESTS === "1";
 const describeIfEnabled = runIntegration ? describe : describe.skip;
 
-describeIfEnabled("transcription service integration (real model)", () => {
+describeIfEnabled("transcription service integration (real OpenAI API)", () => {
     const request = require("supertest");
     const app = require("../../serve.js");
 
@@ -30,5 +31,5 @@ describeIfEnabled("transcription service integration (real model)", () => {
 });
 
 if (!runIntegration) {
-    test.skip("integration tests skipped (set RUN_GPU_INTEGRATION_TESTS=1 to run against real services)", () => {});
+    test.skip("integration tests skipped (set RUN_OPENAI_INTEGRATION_TESTS=1 to run against real services)", () => {});
 }

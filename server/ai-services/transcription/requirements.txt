@@ -1,6 +1,6 @@
-# Pinned exact versions. faster-whisper (CTranslate2 backend) does NOT need
-# torch, which keeps the image small and startup fast.
+# Pinned exact versions. Transcription runs against the OpenAI audio API -
+# no faster-whisper/ctranslate2/GPU dependency.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
-faster-whisper==1.1.0
+openai==1.59.6

@@ -1,19 +1,13 @@
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM python:3.12-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    HF_HOME=/models/translation
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip curl \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install the CUDA-matched torch build first (adjust the index URL to match
-# the driver/CUDA version on the target GPU server), then the rest.
-RUN pip3 install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
@@ -22,13 +16,12 @@ COPY . .
 RUN chmod +x healthcheck.sh
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /models/translation \
-    && chown -R appuser:appuser /app /models/translation
+    && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8002
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ./healthcheck.sh || exit 1
 
 ENV SERVICE_PORT=8002

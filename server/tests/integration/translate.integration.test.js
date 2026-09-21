@@ -1,11 +1,11 @@
-// Integration test against the REAL translation service + REAL model.
-// Skipped by default; requires RUN_GPU_INTEGRATION_TESTS=1 and both the
+// Integration test against the REAL translation service + REAL OpenAI API.
+// Skipped by default; requires RUN_OPENAI_INTEGRATION_TESTS=1 and both the
 // gateway env (INTERNAL_SERVICE_TOKEN, TRANSLATION_SERVICE_URL) and an
-// actual running translation service backed by a GPU.
-const runIntegration = process.env.RUN_GPU_INTEGRATION_TESTS === "1";
+// actual running translation service configured with a valid OPENAI_API_KEY.
+const runIntegration = process.env.RUN_OPENAI_INTEGRATION_TESTS === "1";
 const describeIfEnabled = runIntegration ? describe : describe.skip;
 
-describeIfEnabled("translation service integration (real model)", () => {
+describeIfEnabled("translation service integration (real OpenAI API)", () => {
     const request = require("supertest");
     const app = require("../../serve.js");
 
@@ -26,5 +26,5 @@ describeIfEnabled("translation service integration (real model)", () => {
 });
 
 if (!runIntegration) {
-    test.skip("integration tests skipped (set RUN_GPU_INTEGRATION_TESTS=1 to run against real services)", () => {});
+    test.skip("integration tests skipped (set RUN_OPENAI_INTEGRATION_TESTS=1 to run against real services)", () => {});
 }

@@ -1,13 +1,10 @@
-# CUDA runtime (not "devel") is enough because ctranslate2's pip wheel
-# bundles the CUDA libraries it needs.
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM python:3.12-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip curl \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,15 +16,12 @@ COPY . .
 RUN chmod +x healthcheck.sh
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /models/whisper \
-    && chown -R appuser:appuser /app /models/whisper
+    && chown -R appuser:appuser /app
 USER appuser
-
-ENV MODEL_CACHE_DIR=/models/whisper
 
 EXPOSE 8001
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ./healthcheck.sh || exit 1
 
 ENV SERVICE_PORT=8001
